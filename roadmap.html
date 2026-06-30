@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UK Subscription Center — Build Roadmap</title>
+<style>
+  :root {
+    --blue: #003087;
+    --blue-light: #005cbf;
+    --blue-pale: #e8f0fb;
+    --gold: #c9a227;
+    --gold-pale: #fdf6e3;
+    --green: #1a7f4b;
+    --green-pale: #e6f4ed;
+    --amber: #b45309;
+    --amber-pale: #fef3c7;
+    --red: #b91c1c;
+    --red-pale: #fee2e2;
+    --gray: #6b7280;
+    --gray-light: #f3f4f6;
+    --gray-border: #e5e7eb;
+    --text: #111827;
+    --text-muted: #6b7280;
+    --radius: 8px;
+    --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.06);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8f9fa; color: var(--text); font-size: 14px; }
+
+  /* ── Header ── */
+  .header { background: var(--blue); color: white; padding: 24px 32px; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+  .header p { font-size: 13px; opacity: 0.75; margin-top: 3px; }
+  .header-right { display: flex; gap: 10px; }
+  .btn { padding: 8px 16px; border-radius: var(--radius); font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; }
+  .btn-outline { background: transparent; border: 1.5px solid rgba(255,255,255,0.5); color: white; }
+  .btn-outline:hover { background: rgba(255,255,255,0.12); }
+  .btn-gold { background: var(--gold); color: white; }
+  .btn-gold:hover { filter: brightness(1.1); }
+
+  /* ── Layout ── */
+  .layout { display: flex; height: calc(100vh - 80px); overflow: hidden; }
+  .sidebar { width: 300px; min-width: 300px; background: white; border-right: 1px solid var(--gray-border); overflow-y: auto; display: flex; flex-direction: column; }
+  .main { flex: 1; overflow-y: auto; padding: 24px 28px; }
+
+  /* ── Config Panel ── */
+  .config-header { padding: 16px 20px; border-bottom: 1px solid var(--gray-border); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: white; z-index: 10; }
+  .config-header h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
+  .config-section { padding: 16px 20px; border-bottom: 1px solid var(--gray-border); }
+  .config-section h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--blue); margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+  .org-card { background: var(--gray-light); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; border: 1.5px solid transparent; transition: border-color 0.15s; }
+  .org-card:hover { border-color: var(--blue-light); }
+  .org-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .org-name { font-weight: 700; font-size: 13px; }
+  .org-badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .badge-crm { background: var(--blue-pale); color: var(--blue); }
+  .badge-mc { background: var(--gold-pale); color: var(--amber); }
+  .field-row { margin-bottom: 6px; }
+  .field-row label { display: block; font-size: 11px; color: var(--text-muted); font-weight: 600; margin-bottom: 2px; }
+  .field-row input { width: 100%; padding: 5px 8px; border: 1px solid var(--gray-border); border-radius: 5px; font-size: 12px; background: white; color: var(--text); outline: none; transition: border-color 0.15s; }
+  .field-row input:focus { border-color: var(--blue-light); }
+  .field-row input.placeholder { color: var(--text-muted); font-style: italic; }
+  .add-btn { width: 100%; padding: 7px; border: 1.5px dashed var(--gray-border); border-radius: var(--radius); background: none; cursor: pointer; font-size: 12px; color: var(--text-muted); transition: all 0.15s; display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 4px; }
+  .add-btn:hover { border-color: var(--blue-light); color: var(--blue-light); background: var(--blue-pale); }
+  .delete-btn { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 14px; padding: 2px 4px; border-radius: 4px; line-height: 1; }
+  .delete-btn:hover { background: var(--red-pale); color: var(--red); }
+
+  /* ── Phase timeline ── */
+  .phase-timeline { display: flex; gap: 8px; margin-bottom: 28px; overflow-x: auto; padding-bottom: 4px; }
+  .phase-pill { flex: 1; min-width: 110px; padding: 10px 12px; border-radius: var(--radius); cursor: pointer; border: 2px solid transparent; transition: all 0.15s; text-align: center; }
+  .phase-pill .num { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+  .phase-pill .label { font-size: 12px; font-weight: 600; line-height: 1.3; }
+  .phase-pill.active { border-color: var(--blue); }
+  .phase-pill.status-todo { background: var(--gray-light); color: var(--text-muted); }
+  .phase-pill.status-todo.active { background: var(--blue-pale); color: var(--blue); }
+  .phase-pill.status-inprogress { background: var(--amber-pale); color: var(--amber); }
+  .phase-pill.status-inprogress.active { border-color: var(--amber); }
+  .phase-pill.status-done { background: var(--green-pale); color: var(--green); }
+  .phase-pill.status-done.active { border-color: var(--green); }
+
+  /* ── Phase card ── */
+  .phase-card { background: white; border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 20px; border: 2px solid var(--gray-border); transition: border-color 0.2s; }
+  .phase-card.status-inprogress { border-color: var(--gold); }
+  .phase-card.status-done { border-color: var(--green); }
+  .phase-card-header { padding: 18px 22px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; cursor: pointer; user-select: none; }
+  .phase-card-header:hover { background: var(--gray-light); border-radius: var(--radius) var(--radius) 0 0; }
+  .phase-num { width: 32px; height: 32px; border-radius: 50%; background: var(--blue); color: white; font-weight: 800; font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .phase-card.status-inprogress .phase-num { background: var(--gold); }
+  .phase-card.status-done .phase-num { background: var(--green); }
+  .phase-title-wrap { flex: 1; }
+  .phase-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+  .phase-subtitle { font-size: 13px; color: var(--text-muted); }
+  .phase-meta { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .status-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .status-todo .status-badge { background: var(--gray-light); color: var(--gray); }
+  .status-inprogress .status-badge { background: var(--amber-pale); color: var(--amber); }
+  .status-done .status-badge { background: var(--green-pale); color: var(--green); }
+  .status-select { font-size: 12px; border: 1px solid var(--gray-border); border-radius: 5px; padding: 4px 6px; background: white; cursor: pointer; }
+  .chevron { transition: transform 0.2s; font-size: 16px; color: var(--text-muted); }
+  .phase-card.collapsed .chevron { transform: rotate(-90deg); }
+
+  /* ── Deliverables ── */
+  .phase-body { padding: 0 22px 20px; border-top: 1px solid var(--gray-border); }
+  .phase-card.collapsed .phase-body { display: none; }
+  .owner-row { display: flex; align-items: center; gap: 6px; padding: 12px 0 6px; }
+  .owner-label { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .owner-tag { font-size: 12px; padding: 2px 10px; border-radius: 20px; background: var(--blue-pale); color: var(--blue); font-weight: 600; }
+  .deliverables-title { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 8px; }
+  .deliverable { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--radius); margin-bottom: 6px; border: 1px solid var(--gray-border); background: var(--gray-light); transition: background 0.15s; }
+  .deliverable:hover { background: var(--blue-pale); border-color: #c7d8f5; }
+  .deliverable-check { width: 18px; height: 18px; border: 2px solid var(--gray-border); border-radius: 4px; flex-shrink: 0; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; margin-top: 1px; transition: all 0.15s; }
+  .deliverable-check.checked { background: var(--green); border-color: var(--green); color: white; }
+  .deliverable-content { flex: 1; }
+  .deliverable-name { font-weight: 600; font-size: 13px; margin-bottom: 3px; }
+  .deliverable-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  .deliverable-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 20px; font-weight: 600; }
+  .tag-org { background: var(--blue-pale); color: var(--blue); }
+  .tag-mc { background: var(--gold-pale); color: var(--amber); }
+  .tag-warning { background: var(--amber-pale); color: var(--amber); }
+  .tag-blocker { background: var(--red-pale); color: var(--red); }
+  .tag-repeat { background: #f3e8ff; color: #7c3aed; }
+
+  /* ── Open items banner ── */
+  .open-items { background: var(--amber-pale); border: 1.5px solid #fcd34d; border-radius: var(--radius); padding: 14px 18px; margin-bottom: 24px; }
+  .open-items h3 { font-size: 13px; font-weight: 700; color: var(--amber); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .open-item { font-size: 13px; padding: 6px 0; border-bottom: 1px solid #fde68a; color: var(--text); display: flex; gap: 8px; }
+  .open-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .open-item strong { color: var(--amber); }
+
+  /* ── Section header ── */
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .section-header h2 { font-size: 18px; font-weight: 800; }
+  .expand-all { font-size: 12px; color: var(--blue-light); cursor: pointer; background: none; border: none; font-weight: 600; }
+  .expand-all:hover { text-decoration: underline; }
+
+  /* ── Progress bar ── */
+  .progress-wrap { background: white; border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 16px; }
+  .progress-label { font-size: 13px; font-weight: 700; color: var(--text-muted); white-space: nowrap; }
+  .progress-bar-bg { flex: 1; height: 8px; background: var(--gray-light); border-radius: 4px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--blue-light)); border-radius: 4px; transition: width 0.4s ease; }
+  .progress-count { font-size: 13px; font-weight: 700; white-space: nowrap; }
+
+  /* ── Save notice ── */
+  .save-notice { font-size: 11px; color: var(--green); padding: 4px 10px; background: var(--green-pale); border-radius: 5px; display: none; }
+  .save-notice.visible { display: block; }
+
+  /* ── Dependency arrows ── */
+  .dep-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 8px 12px; background: white; border-radius: var(--radius); border: 1px dashed var(--gray-border); margin-bottom: 6px; }
+  .dep-row .arrow { color: var(--blue); font-weight: 700; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .layout { flex-direction: column; height: auto; overflow: visible; }
+    .sidebar { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--gray-border); max-height: 400px; }
+    .main { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>🎓 UK Subscription Center — Build Roadmap</h1>
+    <p>Salesforce Marketing Cloud · POC: Human Resources Org · University of Kentucky</p>
+  </div>
+  <div class="header-right">
+    <span class="save-notice" id="saveNotice">✓ Saved</span>
+    <button class="btn btn-outline" onclick="exportConfig()">Export Config</button>
+    <button class="btn btn-gold" onclick="saveAll()">Save Changes</button>
+  </div>
+</div>
+
+<div class="layout">
+  <!-- ══ SIDEBAR: Admin Config ══ -->
+  <div class="sidebar">
+    <div class="config-header">
+      <h2>⚙ Org Configuration</h2>
+    </div>
+
+    <!-- CRM Orgs -->
+    <div class="config-section">
+      <h3>🔵 CRM Organizations</h3>
+      <div id="crmOrgs"></div>
+      <button class="add-btn" onclick="addOrg('crm')">＋ Add CRM Org</button>
+    </div>
+
+    <!-- MC Business Units -->
+    <div class="config-section">
+      <h3>🟡 MC Business Units</h3>
+      <div id="mcBUs"></div>
+      <button class="add-btn" onclick="addOrg('mc')">＋ Add Business Unit</button>
+    </div>
+
+    <!-- CRM Fields -->
+    <div class="config-section">
+      <h3>📋 Subscription Fields</h3>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Fields registered in the admin tool. May live on any Salesforce object — API names must match across orgs where shared.</p>
+      <div id="crmFields"></div>
+      <button class="add-btn" onclick="addField()">＋ Add Field</button>
+    </div>
+  </div>
+
+  <!-- ══ MAIN: Roadmap ══ -->
+  <div class="main">
+
+    <!-- Progress -->
+    <div class="progress-wrap">
+      <span class="progress-label">Overall Progress</span>
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressBar" style="width:0%"></div></div>
+      <span class="progress-count" id="progressCount">0 / 0 deliverables</span>
+    </div>
+
+    <!-- Open Items -->
+    <div class="open-items">
+      <h3>⚠ Open Items — Blocking</h3>
+      <div class="open-item"><span>🔴</span><div><strong>Query Performance Risk:</strong> John López to confirm ID-based CRM lookup does not cause email send queue delays. <em>Blocks Phase 2 field browsing and Phase 4.</em></div></div>
+      <div class="open-item"><span>🔴</span><div><strong>Minimal Contact Fields for Non-CRM Audiences:</strong> John López + Emily Brenzel to define minimum fields for Excel-upload contacts. <em>Blocks Phase 6 for upload audiences.</em></div></div>
+    </div>
+
+    <!-- Phase Timeline -->
+    <div class="phase-timeline" id="phaseTimeline"></div>
+
+    <!-- Section header -->
+    <div class="section-header">
+      <h2>Implementation Phases</h2>
+      <button class="expand-all" onclick="toggleAll()">Expand All</button>
+    </div>
+
+    <!-- Phase Cards -->
+    <div id="phaseCards"></div>
+
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// ADMIN CONFIG — Edit org names, IDs, and BU details here.
+// Add or remove entries to match your actual environment.
+// ═══════════════════════════════════════════════════════════
+const DEFAULT_CONFIG = {
+  crmOrgs: [
+    { id: 'crm_hr', name: 'Human Resources', orgId: '', url: '' },
+  ],
+  mcBUs: [
+    { id: 'mc_parent', name: 'Parent BU (Utility Host)', mid: '', isParent: true },
+    { id: 'mc_hr', name: 'HR Business Unit', mid: '', crmLink: 'crm_hr' },
+  ],
+  subscriptionFields: [
+    { apiName: 'Sub_Category_1__c', label: 'Category 1' },
+    { apiName: 'Sub_Category_2__c', label: 'Category 2' },
+    { apiName: 'Sub_Category_3__c', label: 'Category 3' },
+    { apiName: 'Sub_Category_4__c', label: 'Category 4' },
+    { apiName: 'Sub_Category_5__c', label: 'Category 5' },
+    { apiName: 'Sub_Category_6__c', label: 'Category 6' },
+    { apiName: 'Sub_Category_7__c', label: 'Category 7' },
+  ],
+  deliverableChecks: {},
+  phaseStatuses: {}
+};
+
+// ═══════════════════════════════════════════════════════════
+// PHASE & DELIVERABLE DEFINITIONS
+// ═══════════════════════════════════════════════════════════
+const PHASES = [
+  {
+    id: 'p1',
+    num: 1,
+    title: 'CRM Field Preparation',
+    subtitle: 'Ensure subscription fields exist in each CRM org',
+    owner: 'CRM Administrators (per org)',
+    deps: [],
+    deliverables: [
+      {
+        id: 'p1_d1',
+        name: 'Create / verify subscription fields on Salesforce objects',
+        desc: 'Fields may live on any Salesforce object (not restricted to Contact). Fields shared across orgs must have identical API names. Default value must be TRUE on existing records.',
+        tags: ['crm-all', 'repeat-per-org'],
+        blockers: []
+      },
+      {
+        id: 'p1_d2',
+        name: 'Set default value = TRUE for existing records',
+        desc: 'Prevents accidental mass opt-out at launch. Applies to pre-existing records only — new records inherit TRUE by system default.',
+        tags: ['crm-all', 'repeat-per-org'],
+        blockers: []
+      },
+      {
+        id: 'p1_d3',
+        name: 'Validate API name consistency across all orgs',
+        desc: 'Confirm shared fields have identical API names in every participating CRM org before proceeding.',
+        tags: ['crm-all'],
+        blockers: []
+      }
+    ]
+  },
+  {
+    id: 'p2',
+    num: 2,
+    title: 'Subscription Config DE & Admin Tool',
+    subtitle: 'Config data layer + internal tool to manage orgs and fields',
+    owner: 'SF Implementation Team',
+    deps: ['p1'],
+    deliverables: [
+      {
+        id: 'p2_d1',
+        name: 'Design Subscription Config DE schema',
+        desc: 'Schema must store: CRM org metadata (org ID, instance URL, display name, linked MC BU MID), field definitions per org (Salesforce object, API name, display label, field type), and active/inactive flags per org and field.',
+        tags: ['mc-parent'],
+        blockers: []
+      },
+      {
+        id: 'p2_d2',
+        name: 'Create Subscription Config DE in parent BU',
+        desc: 'One-time DE provisioning in the parent utility business unit.',
+        tags: ['mc-parent'],
+        blockers: []
+      },
+      {
+        id: 'p2_d3',
+        name: 'Build admin tool — CRM org management',
+        desc: 'Secured cloud page in parent BU. Allows authorized users to add a new CRM org (org ID, instance URL, display name, linked MC BU MID) and remove an existing org along with its field registrations.',
+        tags: ['mc-parent'],
+        blockers: []
+      },
+      {
+        id: 'p2_d4',
+        name: 'Build admin tool — field browsing + selection',
+        desc: 'Connect to a registered CRM org via Salesforce API, browse available objects and their fields, select fields for inclusion in the subscription center, set display labels, and deactivate/remove fields without touching the underlying CRM field.',
+        tags: ['mc-parent', 'crm-link'],
+        blockers: ['query-perf']
+      },
+      {
+        id: 'p2_d5',
+        name: 'Validate admin tool reads/writes to Config DE',
+        desc: 'Confirm all CRUD operations persist correctly to the Subscription Config DE and are readable by a test instance of the parent cloud page.',
+        tags: ['mc-parent'],
+        blockers: []
+      }
+    ]
+  },
+  {
+    id: 'p3',
+    num: 3,
+    title: 'Map Selected Fields to Synchronized DEs',
+    subtitle: 'Connect the admin-defined fields to MC contact DEs per BU',
+    owner: 'MC Administrator / SF Implementation Team',
+    deps: ['p2'],
+    deliverables: [
+      {
+        id: 'p3_d1',
+        name: 'Map each registered field to synchronized contact DE (per BU)',
+        desc: 'Using the field scope defined in the admin tool, map each CRM field to the corresponding column in the Marketing Cloud synchronized contact data extension for each child BU.',
+        tags: ['mc-child', 'repeat-per-bu'],
+        blockers: []
+      },
+      {
+        id: 'p3_d2',
+        name: 'Validate 15-minute sync cadence',
+        desc: 'Confirm sync is active and field data flows from CRM to MC on the configured 15-minute schedule for each BU.',
+        tags: ['mc-child'],
+        blockers: []
+      }
+    ]
+  },
+  {
+    id: 'p4',
+    num: 4,
+    title: 'Parent Cloud Page',
+    subtitle: 'Central subscriber-facing UI — reads config from admin tool DE',
+    owner: 'SF Implementation Team',
+    deps: ['p2', 'p3'],
+    deliverables: [
+      {
+        id: 'p4_d1',
+        name: 'Token decryption + subscriber context resolution',
+        desc: 'SSJS block decrypts the CloudPagesURL token to identify subscriber key, BU ID, and originating CRM org.',
+        tags: ['mc-parent'],
+        blockers: ['query-perf']
+      },
+      {
+        id: 'p4_d2',
+        name: 'Dynamic field config lookup from Subscription Config DE',
+        desc: 'At runtime, read the active fields and display labels for the originating org from the Subscription Config DE. No org or field identifiers hardcoded in page code.',
+        tags: ['mc-parent'],
+        blockers: []
+      },
+      {
+        id: 'p4_d3',
+        name: 'Pre-populate form from synchronized DE',
+        desc: 'Query the correct synchronized contact DE and render the preference form with current subscription values for the resolved fields.',
+        tags: ['mc-parent'],
+        blockers: ['query-perf']
+      },
+      {
+        id: 'p4_d4',
+        name: 'Form submission → relay POST handler',
+        desc: 'On submit, POST preference data back through the originating child relay page to write to the correct CRM org.',
+        tags: ['mc-parent'],
+        blockers: []
+      },
+      {
+        id: 'p4_d5',
+        name: 'Unsubscribe confirmation screen',
+        desc: 'Render confirmation UI; on confirm, SSJS calls API updateItem with child BU client ID to set subscriber status to Unsubscribed.',
+        tags: ['mc-parent'],
+        blockers: []
+      }
+    ]
+  },
+  {
+    id: 'p5',
+    num: 5,
+    title: 'Child Relay Pages',
+    subtitle: 'One relay page per business unit — the translation bridge',
+    owner: 'SF Implementation Team',
+    deps: ['p4'],
+    deliverables: [
+      {
+        id: 'p5_d1',
+        name: 'Build child relay page (per BU)',
+        desc: 'Each relay page receives the encrypted token from the email footer, redirects to the parent page with subscriber context, and accepts form POST submissions to write back to its linked CRM org.',
+        tags: ['mc-child', 'crm-link', 'repeat-per-bu'],
+        blockers: []
+      },
+      {
+        id: 'p5_d2',
+        name: 'Validate relay → parent redirect for each BU',
+        desc: 'Test token pass-through and confirm preference form loads correctly pre-populated for a subscriber in each BU.',
+        tags: ['mc-child', 'repeat-per-bu'],
+        blockers: []
+      },
+      {
+        id: 'p5_d3',
+        name: 'Validate CRM write-back for each relay page',
+        desc: 'Confirm form submissions route to the correct CRM org and field values persist after the 15-minute sync.',
+        tags: ['mc-child', 'crm-link', 'repeat-per-bu'],
+        blockers: []
+      }
+    ]
+  },
+  {
+    id: 'p6',
+    num: 6,
+    title: 'Email Footers & Migration',
+    subtitle: 'Dynamic footers, existing unsubscribe migration, go-live',
+    owner: 'MC Administrators / Email Template Owners per BU',
+    deps: ['p5'],
+    deliverables: [
+      {
+        id: 'p6_d1',
+        name: 'Build dynamic footer HTML snippet (per BU)',
+        desc: 'Footer uses CloudPagesURL() to generate an encrypted token linking to the correct child relay page. Must use scoped unsubscribe language.',
+        tags: ['mc-child', 'repeat-per-bu'],
+        blockers: []
+      },
+      {
+        id: 'p6_d2',
+        name: 'Apply footer to email templates (per BU)',
+        desc: 'Replace legacy preference center links and unsubscribe footers in all active email templates for each BU.',
+        tags: ['mc-child', 'repeat-per-bu'],
+        blockers: []
+      },
+      {
+        id: 'p6_d3',
+        name: 'Export existing unsubscribe data',
+        desc: 'Export current suppression lists from legacy cloud pages and all active unsubscribe lists.',
+        tags: ['mc-child'],
+        blockers: []
+      },
+      {
+        id: 'p6_d4',
+        name: 'Reload unsubscribes into new configuration',
+        desc: 'Import exported suppression data into the new BU All Subscribers lists to preserve existing opt-outs.',
+        tags: ['mc-child'],
+        blockers: []
+      },
+      {
+        id: 'p6_d5',
+        name: 'Non-CRM audience contact creation workflow',
+        desc: 'Implement MuleSoft flow or Automation Studio script to validate Excel-upload audiences and create minimal CRM contact records (email, first name, source tag) before initiating sends.',
+        tags: ['mc-child', 'crm-link'],
+        blockers: ['contact-fields']
+      },
+      {
+        id: 'p6_d6',
+        name: 'Daily CRM override correction automation',
+        desc: 'Automation Studio batch job that detects Unsubscribed MC status with active CRM status (manual override) and resets MC status to Active via WS Proxy.',
+        tags: ['mc-parent'],
+        blockers: []
+      },
+      {
+        id: 'p6_d7',
+        name: 'External suppression ingestion automation (interim)',
+        desc: 'Automation Studio workflow to ingest opt-out data from external systems (e.g. Constant Contact). Long-term: replace with MuleSoft integration.',
+        tags: ['mc-parent'],
+        blockers: []
+      }
+    ]
+  }
+];
+
+// ── State ──────────────────────────────────────────────────
+let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+let allExpanded = false;
+
+function loadConfig() {
+  const saved = localStorage.getItem('ukSubCenterConfig');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      config = { ...DEFAULT_CONFIG, ...parsed };
+    } catch(e) {}
+  }
+}
+
+function saveAll() {
+  localStorage.setItem('ukSubCenterConfig', JSON.stringify(config));
+  const notice = document.getElementById('saveNotice');
+  notice.classList.add('visible');
+  setTimeout(() => notice.classList.remove('visible'), 2000);
+}
+
+function exportConfig() {
+  const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'uk-subscription-center-config.json'; a.click();
+}
+
+// ── Sidebar: CRM Orgs ──────────────────────────────────────
+function renderSidebar() {
+  renderCRMOrgs();
+  renderMCBUs();
+  renderFields();
+}
+
+function renderCRMOrgs() {
+  const container = document.getElementById('crmOrgs');
+  container.innerHTML = config.crmOrgs.map((org, i) => `
+    <div class="org-card">
+      <div class="org-card-header">
+        <span class="org-name">${org.name || 'CRM Org ' + (i+1)}</span>
+        <div style="display:flex;gap:4px;align-items:center">
+          <span class="org-badge badge-crm">CRM</span>
+          <button class="delete-btn" onclick="deleteOrg('crm',${i})">✕</button>
+        </div>
+      </div>
+      <div class="field-row"><label>Display Name</label>
+        <input value="${org.name}" oninput="config.crmOrgs[${i}].name=this.value;updateOrgName('crm',${i},this.value)" placeholder="e.g. UK Healthcare">
+      </div>
+      <div class="field-row"><label>Salesforce Org ID</label>
+        <input value="${org.orgId}" oninput="config.crmOrgs[${i}].orgId=this.value" placeholder="00D...">
+      </div>
+      <div class="field-row"><label>Instance URL</label>
+        <input value="${org.url}" oninput="config.crmOrgs[${i}].url=this.value" placeholder="https://uk.my.salesforce.com">
+      </div>
+    </div>`).join('');
+}
+
+function renderMCBUs() {
+  const container = document.getElementById('mcBUs');
+  container.innerHTML = config.mcBUs.map((bu, i) => `
+    <div class="org-card">
+      <div class="org-card-header">
+        <span class="org-name">${bu.name || 'BU ' + (i+1)}</span>
+        <div style="display:flex;gap:4px;align-items:center">
+          <span class="org-badge badge-mc">${bu.isParent ? 'PARENT' : 'CHILD'}</span>
+          ${!bu.isParent ? `<button class="delete-btn" onclick="deleteOrg('mc',${i})">✕</button>` : ''}
+        </div>
+      </div>
+      <div class="field-row"><label>BU Name</label>
+        <input value="${bu.name}" oninput="config.mcBUs[${i}].name=this.value" placeholder="e.g. UK Alumni">
+      </div>
+      <div class="field-row"><label>MID</label>
+        <input value="${bu.mid}" oninput="config.mcBUs[${i}].mid=this.value" placeholder="1234567">
+      </div>
+      ${!bu.isParent ? `
+      <div class="field-row"><label>Linked CRM Org</label>
+        <select style="width:100%;padding:5px 8px;border:1px solid var(--gray-border);border-radius:5px;font-size:12px;background:white;" onchange="config.mcBUs[${i}].crmLink=this.value">
+          <option value="">— select CRM org —</option>
+          ${config.crmOrgs.map(o => `<option value="${o.id}" ${bu.crmLink===o.id?'selected':''}>${o.name}</option>`).join('')}
+        </select>
+      </div>` : ''}
+    </div>`).join('');
+}
+
+function renderFields() {
+  const container = document.getElementById('crmFields');
+  container.innerHTML = config.subscriptionFields.map((f, i) => `
+    <div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:8px;">
+      <div style="flex:1">
+        <div class="field-row"><label>API Name</label>
+          <input value="${f.apiName}" oninput="config.subscriptionFields[${i}].apiName=this.value" placeholder="Category_1__c">
+        </div>
+        <div class="field-row"><label>Display Label</label>
+          <input value="${f.label}" oninput="config.subscriptionFields[${i}].label=this.value" placeholder="Alumni News">
+        </div>
+      </div>
+      <button class="delete-btn" style="margin-top:18px" onclick="deleteField(${i})">✕</button>
+    </div>`).join('');
+}
+
+function addOrg(type) {
+  if (type === 'crm') {
+    const id = 'crm' + Date.now();
+    config.crmOrgs.push({ id, name: 'New CRM Org', orgId: '', url: '' });
+  } else {
+    config.mcBUs.push({ id: 'mc' + Date.now(), name: 'New BU', mid: '', crmLink: '' });
+  }
+  renderSidebar();
+}
+
+function deleteOrg(type, i) {
+  if (type === 'crm') config.crmOrgs.splice(i, 1);
+  else config.mcBUs.splice(i, 1);
+  renderSidebar();
+}
+
+function addField() {
+  config.subscriptionFields.push({ apiName: '', label: '' });
+  renderFields();
+}
+
+function deleteField(i) {
+  config.subscriptionFields.splice(i, 1);
+  renderFields();
+}
+
+function updateOrgName(type, i, val) {
+  renderSidebar();
+}
+
+// ── Phase Cards ────────────────────────────────────────────
+function getTagHtml(tags) {
+  return tags.map(t => {
+    if (t === 'crm-all') return `<span class="tag tag-org">All CRM Orgs</span>`;
+    if (t === 'crm-link') return `<span class="tag tag-org">CRM Linked</span>`;
+    if (t === 'mc-parent') return `<span class="tag tag-mc">Parent BU</span>`;
+    if (t === 'mc-child') return `<span class="tag tag-mc">Child BUs</span>`;
+    if (t === 'repeat-per-org') return `<span class="tag tag-repeat">× per CRM Org</span>`;
+    if (t === 'repeat-per-bu') return `<span class="tag tag-repeat">× per BU</span>`;
+    return '';
+  }).join('');
+}
+
+function getBlockerHtml(blockers) {
+  const map = { 'query-perf': '⚠ Blocked: query performance risk unresolved', 'contact-fields': '⚠ Blocked: minimal contact fields not defined' };
+  return blockers.map(b => `<span class="tag tag-blocker">${map[b]||b}</span>`).join('');
+}
+
+function renderPhases() {
+  const timeline = document.getElementById('phaseTimeline');
+  const cards = document.getElementById('phaseCards');
+
+  timeline.innerHTML = PHASES.map(p => {
+    const status = config.phaseStatuses[p.id] || 'todo';
+    return `<div class="phase-pill status-${status}" id="pill_${p.id}" onclick="scrollToPhase('${p.id}')">
+      <div class="num">Phase ${p.num}</div>
+      <div class="label">${p.title}</div>
+    </div>`;
+  }).join('');
+
+  cards.innerHTML = PHASES.map(p => {
+    const status = config.phaseStatuses[p.id] || 'todo';
+    const statusLabel = { todo: 'Not Started', inprogress: 'In Progress', done: 'Done' };
+    const depHtml = p.deps.length ? `<div style="padding:10px 0 6px">
+      ${p.deps.map(d => { const dp = PHASES.find(x=>x.id===d); return `<div class="dep-row">Depends on: <span class="arrow">→</span> Phase ${dp.num}: ${dp.title}</div>`; }).join('')}
+    </div>` : '';
+
+    const delivHtml = p.deliverables.map(d => {
+      const checked = config.deliverableChecks[d.id] || false;
+      return `<div class="deliverable">
+        <div class="deliverable-check ${checked?'checked':''}" onclick="toggleCheck('${d.id}',this)">
+          ${checked ? '✓' : ''}
+        </div>
+        <div class="deliverable-content">
+          <div class="deliverable-name" style="${checked?'text-decoration:line-through;color:var(--text-muted)':''}">${d.name}</div>
+          <div class="deliverable-desc">${d.desc}</div>
+          <div class="deliverable-tags">${getTagHtml(d.tags)}${getBlockerHtml(d.blockers)}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div class="phase-card status-${status}" id="card_${p.id}">
+      <div class="phase-card-header" onclick="toggleCollapse('${p.id}',event)">
+        <div class="phase-num">${p.num}</div>
+        <div class="phase-title-wrap">
+          <div class="phase-title">${p.title}</div>
+          <div class="phase-subtitle">${p.subtitle}</div>
+        </div>
+        <div class="phase-meta">
+          <select class="status-select" onclick="event.stopPropagation()" onchange="setPhaseStatus('${p.id}',this.value)">
+            <option value="todo" ${status==='todo'?'selected':''}>Not Started</option>
+            <option value="inprogress" ${status==='inprogress'?'selected':''}>In Progress</option>
+            <option value="done" ${status==='done'?'selected':''}>Done</option>
+          </select>
+          <span class="chevron">▾</span>
+        </div>
+      </div>
+      <div class="phase-body">
+        ${depHtml}
+        <div class="owner-row"><span class="owner-label">Owner:</span><span class="owner-tag">${p.owner}</span></div>
+        <div class="deliverables-title">Deliverables</div>
+        ${delivHtml}
+      </div>
+    </div>`;
+  }).join('');
+
+  updateProgress();
+}
+
+function toggleCollapse(id, e) {
+  const card = document.getElementById('card_' + id);
+  card.classList.toggle('collapsed');
+}
+
+function scrollToPhase(id) {
+  document.getElementById('card_' + id).scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function toggleAll() {
+  allExpanded = !allExpanded;
+  PHASES.forEach(p => {
+    const card = document.getElementById('card_' + p.id);
+    if (allExpanded) card.classList.remove('collapsed');
+    else card.classList.add('collapsed');
+  });
+  document.querySelector('.expand-all').textContent = allExpanded ? 'Collapse All' : 'Expand All';
+}
+
+function toggleCheck(id, el) {
+  const checked = !config.deliverableChecks[id];
+  config.deliverableChecks[id] = checked;
+  el.classList.toggle('checked', checked);
+  el.innerHTML = checked ? '✓' : '';
+  const nameEl = el.nextElementSibling.querySelector('.deliverable-name');
+  nameEl.style.textDecoration = checked ? 'line-through' : '';
+  nameEl.style.color = checked ? 'var(--text-muted)' : '';
+  updateProgress();
+  saveAll();
+}
+
+function setPhaseStatus(id, val) {
+  config.phaseStatuses[id] = val;
+  const card = document.getElementById('card_' + id);
+  card.className = card.className.replace(/status-\w+/, 'status-' + val);
+  const pill = document.getElementById('pill_' + id);
+  pill.className = pill.className.replace(/status-\w+/, 'status-' + val);
+  saveAll();
+}
+
+function updateProgress() {
+  const allDeliverables = PHASES.flatMap(p => p.deliverables);
+  const total = allDeliverables.length;
+  const done = allDeliverables.filter(d => config.deliverableChecks[d.id]).length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  document.getElementById('progressBar').style.width = pct + '%';
+  document.getElementById('progressCount').textContent = `${done} / ${total} deliverables (${pct}%)`;
+}
+
+// ── Init ───────────────────────────────────────────────────
+loadConfig();
+renderSidebar();
+renderPhases();
+</script>
+</body>
+</html>

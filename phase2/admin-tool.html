@@ -1,0 +1,1323 @@
+<script runat="server">
+Platform.Load("core", "1.1.5");
+
+/* ── DE names ── */
+var DE_ORGS   = "SubscriptionConfig_Orgs";
+var DE_FIELDS = "SubscriptionConfig_Fields";
+
+/* ── Page-level error collector (shown on page instead of crashing it) ── */
+var _errors = [];
+function logErr(label, e) { _errors.push(label + ": " + (e ? e.message : "unknown")); }
+
+/* ── Request context ── */
+var action     = Platform.Request.GetFormField("action") || "";
+var memberName = "Marketing Cloud Admin";
+
+/* ══════════════════════════════════════════════════════════════════════════
+   HELPERS — defined first so they are available to all action handlers
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Build a WSProxy and run a retrieve with a simple single-property filter.
+   Returns Results array or [] on any error. */
+function deRetrieve(deName, cols, filterProp, filterVal) {
+  try {
+    var prox   = new Script.Util.WSProxy();
+    var filter = { Property: filterProp, SimpleOperator: "equals", Value: filterVal };
+    var result = prox.retrieve("DataExtensionObject[" + deName + "]", cols, filter);
+    return (result && result.Results) ? result.Results : [];
+  } catch(e) {
+    logErr("deRetrieve(" + deName + ")", e);
+    return [];
+  }
+}
+
+/* Look up a single org by OrgID — returns a plain mapped object or null */
+function getOrgById(orgId) {
+  var rows = deRetrieve(DE_ORGS,
+    ["OrgID","DisplayName","InstanceURL","MCBUMID","SFClientID","SFClientSecret"],
+    "OrgID", orgId);
+  if (rows.length == 0) return null;
+  var r = rows[0];
+  return {
+    OrgID:          getProp(r, "OrgID"),
+    DisplayName:    getProp(r, "DisplayName"),
+    InstanceURL:    getProp(r, "InstanceURL").replace(/\/+$/, ""), // strip trailing slash
+    MCBUMID:        getProp(r, "MCBUMID"),
+    SFClientID:     getProp(r, "SFClientID"),
+    SFClientSecret: getProp(r, "SFClientSecret")
+  };
+}
+
+/* Get SF access token via client credentials OAuth */
+function getSFToken(org) {
+  if (!org || !org.InstanceURL || !org.SFClientID || !org.SFClientSecret) {
+    logErr("getSFToken missing fields", null);
+    return null;
+  }
+  try {
+    var tokenUrl = org.InstanceURL + "/services/oauth2/token";
+    var payload  = "grant_type=client_credentials"
+                 + "&client_id="     + org.SFClientID
+                 + "&client_secret=" + org.SFClientSecret;
+    var sc = [0];
+    var r  = HTTP.Post(tokenUrl, "application/x-www-form-urlencoded", payload, [], [], sc);
+    if (sc[0] == 200) {
+      var d = Platform.Function.ParseJSON(r);
+      if (!d || !d.access_token) { logErr("getSFToken no token in response: " + (r || "empty"), null); return null; }
+      return d.access_token;
+    }
+    logErr("getSFToken HTTP " + sc[0] + " url=" + tokenUrl + " resp=" + (r ? r.substring(0,200) : "empty"), null);
+  } catch(e) { logErr("getSFToken exception", e); }
+  return null;
+}
+
+/* WSProxy returns DE row fields as a Properties array: [{Name,Value}, ...]
+   This helper extracts the value by name from either format. */
+function getProp(row, name) {
+  if (row[name] != null) return row[name];        // flat property (some contexts)
+  if (row.Properties) {                            // Properties array (WSProxy default)
+    for (var pi = 0; pi < row.Properties.length; pi++) {
+      if (row.Properties[pi].Name == name) return row.Properties[pi].Value || "";
+    }
+  }
+  return "";
+}
+
+function orgToObj(r) {
+  return { OrgID:       getProp(r,"OrgID"),
+           DisplayName: getProp(r,"DisplayName"),
+           InstanceURL: getProp(r,"InstanceURL"),
+           MCBUMID:     getProp(r,"MCBUMID") };
+}
+function fieldToObj(r) {
+  return { FieldID:      getProp(r,"FieldID"),
+           OrgID:        getProp(r,"OrgID"),
+           SFObjectName: getProp(r,"SFObjectName"),
+           FieldAPIName: getProp(r,"FieldAPIName"),
+           DisplayLabel: getProp(r,"DisplayLabel"),
+           FieldType:    getProp(r,"FieldType"),
+           SortOrder:    getProp(r,"SortOrder") || "99" };
+}
+
+/* Safe JSON serialization — falls back to "[]" if Stringify throws */
+function toJson(arr) {
+  try { return Stringify(arr); } catch(e) { return "[]"; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FORM ACTION HANDLERS — run before page render, set statusMsg on result
+   ══════════════════════════════════════════════════════════════════════════ */
+var statusMsg  = "";
+var statusType = "success";
+
+/* Browser state — set by loadBrowser / loadFields; written to page JS via data injection */
+var browserState  = "";    /* "objects" or "fields" */
+var browserOrgId  = "";
+var sfObjectsJson = "null";
+var sfSelectedObj = "";
+var sfFieldsJson  = "null";
+
+if (action == "addOrg") {
+  try {
+    var aoId  = Platform.Request.GetFormField("orgId");
+    var aoNm  = Platform.Request.GetFormField("displayName");
+    var aoUrl = Platform.Request.GetFormField("instanceUrl");
+    var aoMid = Platform.Request.GetFormField("mcBuMid");
+    var aoCid = Platform.Request.GetFormField("clientId");
+    var aoSec = Platform.Request.GetFormField("clientSecret");
+    if (!aoId || !aoNm || !aoUrl || !aoMid || !aoCid || !aoSec) {
+      statusMsg = "All fields are required."; statusType = "error";
+    } else {
+      /* Use WSProxy instead of UpsertData — returns full StatusMessage on failure */
+      var aoProx = new Script.Util.WSProxy();
+      var aoProps = [
+        {Name:"OrgID",         Value: aoId},
+        {Name:"DisplayName",   Value: aoNm},
+        {Name:"InstanceURL",   Value: aoUrl},
+        {Name:"MCBUMID",       Value: aoMid},
+        {Name:"SFClientID",    Value: aoCid},
+        {Name:"SFClientSecret",Value: aoSec},
+        {Name:"IsActive",      Value: "true"},
+        {Name:"CreatedDate",   Value: Format(Now(), "M/d/yyyy")},
+        {Name:"ModifiedDate",  Value: Format(Now(), "M/d/yyyy")}
+      ];
+      var aoObj  = {CustomerKey: DE_ORGS, Properties: aoProps};
+      var aoOpts = {SaveOptions: [{PropertyName: "*", SaveAction: "UpdateAdd"}]};
+      var aoRes  = aoProx.updateItem("DataExtensionObject", aoObj, aoOpts);
+      if (aoRes && aoRes.Status == "OK") {
+        statusMsg = "Org registered successfully.";
+      } else {
+        statusMsg  = "Write failed: " + (aoRes ? aoRes.StatusMessage : "no response from WSProxy");
+        statusType = "error";
+      }
+    }
+  } catch(e) { statusMsg = "addOrg error: " + e.message; statusType = "error"; }
+}
+
+if (action == "removeOrg") {
+  try {
+    var roId  = Platform.Request.GetFormField("orgId");
+    var roOrg = getOrgById(roId);
+    var roNow = Now();
+    Platform.Function.UpdateData(DE_ORGS, ["OrgID"], [roId], ["IsActive","ModifiedDate"], [0, roNow]);
+    var roFields = deRetrieve(DE_FIELDS, ["FieldID"], "OrgID", roId);
+    for (var rf = 0; rf < roFields.length; rf++) {
+      Platform.Function.UpdateData(DE_FIELDS, ["FieldID"], [roFields[rf].FieldID],
+        ["IsActive","ModifiedDate"], [0, roNow]);
+    }
+    statusMsg = "Org " + (roOrg ? roOrg.DisplayName : roId) + " deactivated.";
+  } catch(e) { statusMsg = "removeOrg error: " + e.message; statusType = "error"; }
+}
+
+if (action == "editOrg") {
+  try {
+    var eoId  = Platform.Request.GetFormField("orgId");
+    var eoNm  = Platform.Request.GetFormField("displayName");
+    var eoUrl = Platform.Request.GetFormField("instanceUrl");
+    var eoMid = Platform.Request.GetFormField("mcBuMid");
+    var eoCid = Platform.Request.GetFormField("clientId");
+    var eoSec = Platform.Request.GetFormField("clientSecret");
+    if (!eoId || !eoNm || !eoUrl || !eoMid || !eoCid) {
+      statusMsg = "All fields except Client Secret are required."; statusType = "error";
+    } else {
+      /* Build update props — only update secret if a new value was supplied */
+      var eoProx  = new Script.Util.WSProxy();
+      var eoProps = [
+        {Name:"OrgID",       Value: eoId},
+        {Name:"DisplayName", Value: eoNm},
+        {Name:"InstanceURL", Value: eoUrl},
+        {Name:"MCBUMID",     Value: eoMid},
+        {Name:"SFClientID",  Value: eoCid},
+        {Name:"ModifiedDate",Value: Format(Now(), "M/d/yyyy")}
+      ];
+      if (eoSec && eoSec != "") {
+        eoProps.push({Name:"SFClientSecret", Value: eoSec});
+      }
+      var eoObj  = {CustomerKey: DE_ORGS, Properties: eoProps};
+      var eoOpts = {SaveOptions: [{PropertyName: "*", SaveAction: "UpdateAdd"}]};
+      var eoRes  = eoProx.updateItem("DataExtensionObject", eoObj, eoOpts);
+      if (eoRes && eoRes.Status == "OK") {
+        statusMsg = "Org updated successfully.";
+      } else {
+        statusMsg  = "Update failed: " + (eoRes ? eoRes.StatusMessage : "no response from WSProxy");
+        statusType = "error";
+      }
+    }
+  } catch(e) { statusMsg = "editOrg error: " + e.message; statusType = "error"; }
+}
+
+if (action == "addField") {
+  try {
+    var afOrgId = Platform.Request.GetFormField("orgId");
+    var afObj   = Platform.Request.GetFormField("sfObject");
+    var afApi   = Platform.Request.GetFormField("fieldApiName");
+    var afLbl   = Platform.Request.GetFormField("displayLabel");
+    var afType  = Platform.Request.GetFormField("fieldType");
+    var afSort  = Platform.Request.GetFormField("sortOrder") || "99";
+    if (!afOrgId || !afObj || !afApi || !afLbl || !afType) {
+      statusMsg = "All field properties are required."; statusType = "error";
+    } else {
+      var afId    = afOrgId + "_" + afObj + "_" + afApi;
+      var afToday = Format(Now(), "M/d/yyyy");
+      var afProx  = new Script.Util.WSProxy();
+      var afProps = [
+        {Name: "FieldID",       Value: afId},
+        {Name: "OrgID",         Value: afOrgId},
+        {Name: "SFObjectName",  Value: afObj},
+        {Name: "FieldAPIName",  Value: afApi},
+        {Name: "DisplayLabel",  Value: afLbl},
+        {Name: "FieldType",     Value: afType},
+        {Name: "SortOrder",     Value: afSort},
+        {Name: "IsActive",      Value: "true"},
+        {Name: "CreatedDate",   Value: afToday},
+        {Name: "ModifiedDate",  Value: afToday}
+      ];
+      var afObj2 = {CustomerKey: DE_FIELDS, Properties: afProps};
+      var afOpts = {SaveOptions: [{PropertyName: "*", SaveAction: "UpdateAdd"}]};
+      var afRes  = afProx.updateItem("DataExtensionObject", afObj2, afOpts);
+      if (afRes && afRes.Status == "OK") {
+        statusMsg = "Field added successfully.";
+      } else {
+        statusMsg  = "Write failed: " + (afRes ? afRes.StatusMessage : "no response") +
+                     " — verify the SubscriptionConfig_Fields DE External Key matches exactly.";
+        statusType = "error";
+      }
+    }
+  } catch(e) { statusMsg = "addField error: " + e.message; statusType = "error"; }
+}
+
+if (action == "updateField") {
+  try {
+    var ufId     = Platform.Request.GetFormField("fieldId");
+    var ufLbl    = Platform.Request.GetFormField("displayLabel");
+    var ufSort   = Platform.Request.GetFormField("sortOrder");
+    var ufActive = (Platform.Request.GetFormField("isActive") == "false") ? "false" : "true";
+    var ufProx   = new Script.Util.WSProxy();
+    var ufProps  = [
+      {Name: "FieldID",      Value: ufId},
+      {Name: "DisplayLabel", Value: ufLbl},
+      {Name: "SortOrder",    Value: ufSort},
+      {Name: "IsActive",     Value: ufActive},
+      {Name: "ModifiedDate", Value: Format(Now(), "M/d/yyyy")}
+    ];
+    var ufRes = ufProx.updateItem("DataExtensionObject",
+      {CustomerKey: DE_FIELDS, Properties: ufProps},
+      {SaveOptions: [{PropertyName: "*", SaveAction: "Update"}]});
+    statusMsg = (ufRes && ufRes.Status == "OK") ? "Field updated." : "Update failed: " + (ufRes ? ufRes.StatusMessage : "no response");
+    if (!ufRes || ufRes.Status != "OK") statusType = "error";
+  } catch(e) { statusMsg = "updateField error: " + e.message; statusType = "error"; }
+}
+
+if (action == "removeField") {
+  try {
+    var rfId   = Platform.Request.GetFormField("fieldId");
+    var rfProx = new Script.Util.WSProxy();
+    var rfRes  = rfProx.updateItem("DataExtensionObject",
+      {CustomerKey: DE_FIELDS, Properties: [
+        {Name: "FieldID",      Value: rfId},
+        {Name: "IsActive",     Value: "false"},
+        {Name: "ModifiedDate", Value: Format(Now(), "M/d/yyyy")}
+      ]},
+      {SaveOptions: [{PropertyName: "*", SaveAction: "Update"}]});
+    statusMsg = (rfRes && rfRes.Status == "OK") ? "Field deactivated." : "Deactivate failed: " + (rfRes ? rfRes.StatusMessage : "no response");
+    if (!rfRes || rfRes.Status != "OK") statusType = "error";
+  } catch(e) { statusMsg = "removeField error: " + e.message; statusType = "error"; }
+}
+
+/* testHttp: multi-target diagnostic to isolate whether outbound HTTP works and where it breaks */
+if (action == "testHttp") {
+  var thOrgId = Platform.Request.GetFormField("orgId");
+  var thOrg   = getOrgById(thOrgId);
+  if (!thOrg) {
+    statusMsg = "testHttp: org not found (" + (thOrgId || "null") + ")"; statusType = "error";
+  } else {
+    var thLines = [];
+
+    /* ① Neutral: can MC make ANY outbound HTTP call? */
+    try {
+      var thSc0 = [0];
+      HTTP.Get("https://www.example.com", [], [], thSc0);
+      thLines.push("① example.com GET → HTTP " + thSc0[0]);
+    } catch(e) { thLines.push("① example.com GET → EXCEPTION: " + e.message); }
+
+    /* ② Salesforce global login endpoint (always publicly reachable) */
+    try {
+      var thSc3 = [0];
+      HTTP.Get("https://login.salesforce.com", [], [], thSc3);
+      thLines.push("② login.salesforce.com GET → HTTP " + thSc3[0]);
+    } catch(e) { thLines.push("② login.salesforce.com GET → EXCEPTION: " + e.message); }
+
+    /* ③ Instance URL (the my.salesforce.com domain) */
+    try {
+      var thSc1 = [0];
+      HTTP.Get(thOrg.InstanceURL, [], [], thSc1);
+      thLines.push("③ " + thOrg.InstanceURL + " GET → HTTP " + thSc1[0]);
+    } catch(e) { thLines.push("③ instance GET → EXCEPTION: " + e.message); }
+
+    /* ④ POST to login.salesforce.com token endpoint with dummy creds (expect 400 if reachable) */
+    try {
+      var thSc4 = [0];
+      var thR4  = HTTP.Post("https://login.salesforce.com/services/oauth2/token",
+                            "application/x-www-form-urlencoded",
+                            "grant_type=client_credentials&client_id=TEST&client_secret=TEST",
+                            [], [], thSc4);
+      thLines.push("④ login.sf POST → HTTP " + thSc4[0] + " | " + (thR4 ? thR4.substring(0,120) : "empty"));
+    } catch(e) { thLines.push("④ login.sf POST → EXCEPTION: " + e.message); }
+
+    /* ⑤ POST to instance token endpoint with dummy creds */
+    try {
+      var thSc2 = [0];
+      var thR2  = HTTP.Post(thOrg.InstanceURL + "/services/oauth2/token",
+                            "application/x-www-form-urlencoded",
+                            "grant_type=client_credentials&client_id=TEST&client_secret=TEST",
+                            [], [], thSc2);
+      thLines.push("⑤ instance POST → HTTP " + thSc2[0] + " | " + (thR2 ? thR2.substring(0,120) : "empty"));
+    } catch(e) { thLines.push("⑤ instance POST → EXCEPTION: " + e.message); }
+
+    statusMsg  = thLines.join(" &nbsp;|&nbsp; ");
+    statusType = "error";
+  }
+}
+
+/* ── BROWSER HANDLERS — page-reload approach (fall through to normal render) ── */
+/* loadBrowser: authenticates with SF and fetches the full object list */
+if (action == "loadBrowser") {
+  var lbOrgId = Platform.Request.GetFormField("orgId");
+  var lbOrg   = getOrgById(lbOrgId);
+  if (!lbOrg) {
+    statusMsg = "Org not found: " + (lbOrgId || "none"); statusType = "error";
+  } else {
+    var lbToken = getSFToken(lbOrg);
+    if (!lbToken) {
+      statusMsg  = "Could not authenticate with Salesforce. Check Client ID, Client Secret, and IP Relaxation setting.";
+      statusType = "error";
+    } else {
+      try {
+        var lbSc = [0];
+        var lbR  = HTTP.Get(lbOrg.InstanceURL + "/services/data/v59.0/sobjects/",
+                            ["Authorization","Accept"],
+                            ["Bearer " + lbToken, "application/json"], lbSc);
+        if (lbSc[0] == 200) {
+          sfObjectsJson = lbR;
+          browserOrgId  = lbOrgId;
+          browserState  = "objects";
+        } else {
+          statusMsg  = "Salesforce API error " + lbSc[0] + " loading object list.";
+          statusType = "error";
+        }
+      } catch(e) { statusMsg = "loadBrowser error: " + e.message; statusType = "error"; }
+    }
+  }
+}
+
+/* loadFields: fetches field metadata for one SF object (and reloads the object list) */
+if (action == "loadFields") {
+  var lfOrgId = Platform.Request.GetFormField("orgId");
+  var lfObj   = Platform.Request.GetFormField("objectName");
+  var lfOrg   = getOrgById(lfOrgId);
+  if (!lfOrg || !lfObj) {
+    statusMsg = "Org or object name missing."; statusType = "error";
+  } else {
+    var lfToken = getSFToken(lfOrg);
+    if (!lfToken) {
+      statusMsg = "Could not authenticate with Salesforce."; statusType = "error";
+    } else {
+      try {
+        /* Reload objects list so the left panel still renders */
+        var lfSc1 = [0];
+        var lfR1  = HTTP.Get(lfOrg.InstanceURL + "/services/data/v59.0/sobjects/",
+                             ["Authorization","Accept"],
+                             ["Bearer " + lfToken, "application/json"], lfSc1);
+        if (lfSc1[0] == 200) { sfObjectsJson = lfR1; }
+
+        /* Fetch describe for the chosen object */
+        var lfSc2 = [0];
+        var lfR2  = HTTP.Get(lfOrg.InstanceURL + "/services/data/v59.0/sobjects/" + lfObj + "/describe",
+                             ["Authorization","Accept"],
+                             ["Bearer " + lfToken, "application/json"], lfSc2);
+        if (lfSc2[0] == 200) {
+          sfFieldsJson  = lfR2;
+          sfSelectedObj = lfObj;
+          browserOrgId  = lfOrgId;
+          browserState  = "fields";
+        } else {
+          statusMsg  = "Salesforce API error " + lfSc2[0] + " loading fields for " + lfObj + ".";
+          statusType = "error";
+        }
+      } catch(e) { statusMsg = "loadFields error: " + e.message; statusType = "error"; }
+    }
+  }
+}
+
+/* addBatchFields: saves all selected fields to the DE in a single page POST */
+if (action == "addBatchFields") {
+  try {
+    var abOrgId = Platform.Request.GetFormField("orgId");
+    var abCount = parseInt(Platform.Request.GetFormField("fieldCount") || "0", 10);
+    var abAdded = 0;
+    var abNow   = Now();
+    for (var abi = 0; abi < abCount; abi++) {
+      var abObj  = Platform.Request.GetFormField("obj_"  + abi);
+      var abApi  = Platform.Request.GetFormField("api_"  + abi);
+      var abLbl  = Platform.Request.GetFormField("lbl_"  + abi);
+      var abType = Platform.Request.GetFormField("type_" + abi);
+      var abSort = Platform.Request.GetFormField("sort_" + abi) || "99";
+      if (abObj && abApi && abLbl && abType) {
+        var abId = abOrgId + "_" + abObj + "_" + abApi;
+        Platform.Function.UpsertData(DE_FIELDS, ["FieldID"], [abId],
+          ["FieldID","OrgID","SFObjectName","FieldAPIName","DisplayLabel","FieldType","SortOrder","IsActive","CreatedDate","ModifiedDate"],
+          [abId, abOrgId, abObj, abApi, abLbl, abType, abSort, 1, abNow, abNow]);
+        abAdded++;
+      }
+    }
+    statusMsg = abAdded + " field(s) added successfully.";
+  } catch(e) { statusMsg = "addBatchFields error: " + e.message; statusType = "error"; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LOAD DATA FOR PAGE RENDER
+   ══════════════════════════════════════════════════════════════════════════ */
+var pageOrgs   = [];
+var pageFields = [];
+
+try {
+  var rawOrgs = deRetrieve(DE_ORGS, ["OrgID","DisplayName","InstanceURL","MCBUMID"], "IsActive", 1);
+  for (var oi = 0; oi < rawOrgs.length; oi++) { pageOrgs.push(orgToObj(rawOrgs[oi])); }
+} catch(e) { logErr("loadOrgs", e); }
+
+try {
+  var rawFlds = deRetrieve(DE_FIELDS,
+    ["FieldID","OrgID","SFObjectName","FieldAPIName","DisplayLabel","FieldType","SortOrder"],
+    "IsActive", 1);
+  for (var fi = 0; fi < rawFlds.length; fi++) { pageFields.push(fieldToObj(rawFlds[fi])); }
+} catch(e) { logErr("loadFields", e); }
+
+var orgsJson   = toJson(pageOrgs);
+var fieldsJson = toJson(pageFields);
+
+</script>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UK Subscription Center — Admin Tool</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:       #005DAA;   /* UK blue */
+      --gold:       #B6862C;   /* UK gold */
+      --blue-lt:    #E8F0F8;
+      --gold-lt:    #FBF5E8;
+      --success:    #1A7A3F;
+      --success-lt: #E8F5EE;
+      --error:      #B91C1C;
+      --error-lt:   #FEE2E2;
+      --gray-1:     #F5F6F8;
+      --gray-2:     #E4E6EA;
+      --gray-3:     #9BA3AF;
+      --gray-4:     #4B5563;
+      --text:       #111827;
+      --radius:     6px;
+      --shadow:     0 1px 4px rgba(0,0,0,.12);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      color: var(--text);
+      background: var(--gray-1);
+      min-height: 100vh;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      background: var(--blue);
+      color: #fff;
+      padding: 0 24px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 6px rgba(0,0,0,.25);
+    }
+    .topbar-title { font-size: 16px; font-weight: 700; letter-spacing: .3px; }
+    .topbar-sub   { font-size: 12px; opacity: .75; margin-top: 1px; }
+    .topbar-user  { font-size: 12px; opacity: .8; }
+
+    /* ── Layout ── */
+    .container { max-width: 1100px; margin: 0 auto; padding: 24px 20px 48px; }
+
+    /* ── Status banner ── */
+    .status-banner {
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .status-banner.success { background: var(--success-lt); color: var(--success); border-left: 4px solid var(--success); }
+    .status-banner.error   { background: var(--error-lt);   color: var(--error);   border-left: 4px solid var(--error); }
+
+    /* ── Access denied ── */
+    .access-denied {
+      background: #fff;
+      border-radius: var(--radius);
+      border: 1px solid var(--gray-2);
+      padding: 48px 32px;
+      text-align: center;
+      max-width: 480px;
+      margin: 48px auto;
+    }
+    .access-denied h2 { font-size: 18px; margin-bottom: 8px; color: var(--error); }
+    .access-denied p  { color: var(--gray-4); line-height: 1.6; }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; gap: 2px; margin-bottom: 20px; border-bottom: 2px solid var(--gray-2); }
+    .tab-btn {
+      padding: 10px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--gray-4);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      cursor: pointer;
+      transition: color .15s, border-color .15s;
+    }
+    .tab-btn:hover  { color: var(--blue); }
+    .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Cards ── */
+    .card {
+      background: #fff;
+      border: 1px solid var(--gray-2);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--gray-2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .card-title { font-size: 15px; font-weight: 700; }
+    .card-body  { padding: 20px; }
+
+    /* ── Tables ── */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      color: var(--gray-3);
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--gray-2);
+      background: var(--gray-1);
+    }
+    td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--gray-2);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--gray-1); }
+    .mono { font-family: "SF Mono", Consolas, monospace; font-size: 12px; color: var(--gray-4); }
+    .empty-row td { text-align: center; color: var(--gray-3); padding: 32px; }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-green { background: #D1FAE5; color: #065F46; }
+    .badge-gray  { background: var(--gray-2); color: var(--gray-4); }
+    .badge-blue  { background: var(--blue-lt); color: var(--blue); }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity .15s, filter .15s;
+    }
+    .btn:hover   { filter: brightness(.93); }
+    .btn:active  { filter: brightness(.86); }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-danger  { background: var(--error); color: #fff; }
+    .btn-ghost   { background: transparent; color: var(--blue); border: 1px solid var(--blue); }
+    .btn-sm      { padding: 5px 10px; font-size: 12px; }
+
+    /* ── Forms ── */
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .form-group { display: flex; flex-direction: column; gap: 5px; }
+    .form-group.full { grid-column: 1 / -1; }
+    label { font-size: 12px; font-weight: 600; color: var(--gray-4); }
+    input[type="text"], input[type="number"], select {
+      padding: 8px 10px;
+      border: 1px solid var(--gray-2);
+      border-radius: var(--radius);
+      font-size: 13px;
+      color: var(--text);
+      background: #fff;
+      width: 100%;
+      transition: border-color .15s;
+    }
+    input[type="text"]:focus, input[type="number"]:focus, select:focus {
+      outline: none;
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(0,93,170,.1);
+    }
+    .field-hint { font-size: 11px; color: var(--gray-3); margin-top: 2px; }
+
+    /* ── Modals ── */
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.25);
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-sm  { max-width: 480px; }
+    .modal-lg  { max-width: 800px; }
+    .modal-header {
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--gray-2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title  { font-size: 16px; font-weight: 700; }
+    .modal-close  { font-size: 20px; color: var(--gray-3); cursor: pointer; background: none; border: none; line-height: 1; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body   { padding: 22px; }
+    .modal-footer {
+      padding: 16px 22px;
+      border-top: 1px solid var(--gray-2);
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    /* ── Object / field browser ── */
+    .browser-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; min-height: 380px; }
+    .browser-pane {
+      border: 1px solid var(--gray-2);
+      border-radius: var(--radius);
+      display: flex;
+      flex-direction: column;
+    }
+    .browser-pane-header {
+      padding: 10px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .4px;
+      color: var(--gray-4);
+      border-bottom: 1px solid var(--gray-2);
+      background: var(--gray-1);
+    }
+    .browser-search {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--gray-2);
+    }
+    .browser-search input {
+      width: 100%;
+      padding: 6px 10px;
+      border: 1px solid var(--gray-2);
+      border-radius: var(--radius);
+      font-size: 13px;
+    }
+    .browser-list { flex: 1; overflow-y: auto; max-height: 300px; }
+    .browser-item {
+      padding: 8px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      border-bottom: 1px solid var(--gray-2);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .browser-item:hover  { background: var(--blue-lt); }
+    .browser-item.active { background: var(--blue-lt); font-weight: 600; color: var(--blue); }
+    .browser-item .obj-label { font-size: 11px; color: var(--gray-3); }
+    .browser-empty { padding: 24px; text-align: center; color: var(--gray-3); font-size: 13px; }
+    .browser-loading { padding: 24px; text-align: center; color: var(--gray-3); font-size: 13px; }
+
+    .field-check-list { flex: 1; overflow-y: auto; max-height: 320px; }
+    .field-check-item {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--gray-2);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .field-check-item:hover { background: var(--gray-1); }
+    .field-check-item input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; accent-color: var(--blue); }
+    .field-check-name  { font-size: 13px; font-weight: 500; }
+    .field-check-meta  { font-size: 11px; color: var(--gray-3); margin-top: 1px; }
+
+    /* ── Org selector in Fields tab ── */
+    .org-selector-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .org-selector-bar label { font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .org-selector-bar select { max-width: 260px; }
+
+    /* ── Confirm dialog ── */
+    .confirm-text { color: var(--gray-4); line-height: 1.6; margin-bottom: 8px; }
+    .confirm-warn { color: var(--error); font-size: 12px; font-weight: 600; }
+
+    /* ── Spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid var(--gray-2);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     TOP BAR
+     ══════════════════════════════════════════════════════════════════════════ -->
+<div class="topbar">
+  <div>
+    <div class="topbar-title">UK Subscription Center — Admin Tool</div>
+    <div class="topbar-sub">Parent Business Unit | Phase 2 Configuration</div>
+  </div>
+  <div class="topbar-user"><script runat="server">
+    Write(memberName != null && memberName != "" ? "Signed in as " + memberName : "Marketing Cloud Admin");
+  </script></div>
+</div>
+
+<div class="container">
+
+
+<!-- ── SSJS error output (debug — shows instead of crashing the page) ─── -->
+<script runat="server">
+if (_errors.length > 0) {
+  Write('<div style="background:#7f1d1d;color:#fff;padding:14px 18px;border-radius:6px;margin-bottom:16px;font-family:monospace;font-size:13px">');
+  Write('<strong>SSJS Errors (debug):</strong><br>');
+  for (var ei = 0; ei < _errors.length; ei++) { Write(_errors[ei] + '<br>'); }
+  Write('</div>');
+}
+</script>
+
+<!-- ── Status banner (shown after form submission) ─────────────────────── -->
+<script runat="server">
+if (statusMsg) {
+  Write('<div class="status-banner ' + statusType + '">' + statusMsg + '</div>');
+}
+</script>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     TABS
+     ══════════════════════════════════════════════════════════════════════════ -->
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('orgs', this)">CRM Organizations</button>
+  <button class="tab-btn"       onclick="switchTab('fields', this)">Subscription Fields</button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     TAB 1: CRM ORGANIZATIONS
+     ══════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-orgs" class="tab-panel active">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Registered CRM Organizations</span>
+      <button class="btn btn-primary" onclick="openModal('modal-add-org')">
+        + Add Organization
+      </button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Display Name</th>
+          <th>Org ID</th>
+          <th>Instance URL</th>
+          <th>MC BU MID</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="orgs-tbody">
+        <!-- Populated by JS from embedded SSJS data -->
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     TAB 2: SUBSCRIPTION FIELDS
+     ══════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-fields" class="tab-panel">
+  <div class="org-selector-bar">
+    <label for="field-org-select">Organization:</label>
+    <select id="field-org-select" onchange="renderFieldsTable()">
+      <option value="">— Select an org —</option>
+    </select>
+    <button class="btn btn-primary" onclick="openAddField()" id="browse-btn" disabled>
+      + Add Field
+    </button>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Active Subscription Fields</span>
+      <span id="fields-org-label" style="font-size:13px;color:var(--gray-3)">Select an org to view its fields</span>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Display Label</th>
+          <th>SF Object</th>
+          <th>API Name</th>
+          <th>Field Type</th>
+          <th>Sort</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="fields-tbody">
+        <tr class="empty-row"><td colspan="7">Select an organization above</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     MODALS
+     ══════════════════════════════════════════════════════════════════════════ -->
+
+<!-- Add Org Modal -->
+<div class="modal-overlay" id="modal-add-org">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Add CRM Organization</span>
+      <button class="modal-close" onclick="closeModal('modal-add-org')">&times;</button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="addOrg">
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group full">
+            <label>Display Name *</label>
+            <input type="text" name="displayName" placeholder="e.g. Human Resources" required>
+            <span class="field-hint">Shown in the admin tool — not visible to subscribers.</span>
+          </div>
+          <div class="form-group full">
+            <label>Salesforce Org ID *</label>
+            <input type="text" name="orgId" placeholder="00D..." maxlength="18" required>
+            <span class="field-hint">18-character org ID from Setup → Company Information.</span>
+          </div>
+          <div class="form-group full">
+            <label>Instance URL *</label>
+            <input type="text" name="instanceUrl" placeholder="https://uk.my.salesforce.com" required>
+            <span class="field-hint">No trailing slash.</span>
+          </div>
+          <div class="form-group">
+            <label>MC Child BU MID *</label>
+            <input type="text" name="mcBuMid" placeholder="e.g. 534210" required>
+            <span class="field-hint">Used for scoped unsubscribe calls.</span>
+          </div>
+          <div class="form-group">
+            <label>Connected App Client ID *</label>
+            <input type="text" name="clientId" placeholder="3MVG..." required>
+          </div>
+          <div class="form-group full">
+            <label>Connected App Client Secret *</label>
+            <input type="text" name="clientSecret" placeholder="Client secret" required>
+            <span class="field-hint">Stored server-side only. Never exposed to the browser.</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-add-org')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Register Org</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Remove Org Confirm Modal -->
+<div class="modal-overlay" id="modal-remove-org">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Deactivate Organization</span>
+      <button class="modal-close" onclick="closeModal('modal-remove-org')">&times;</button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="removeOrg">
+      <input type="hidden" name="orgId" id="remove-org-id">
+      <div class="modal-body">
+        <p class="confirm-text">Are you sure you want to deactivate <strong id="remove-org-name"></strong>?</p>
+        <p class="confirm-warn">This will also deactivate all subscription fields registered for this org. The org and its fields will no longer appear on the subscriber preference form.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-remove-org')">Cancel</button>
+        <button type="submit" class="btn btn-danger">Deactivate</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Org Modal -->
+<div class="modal-overlay" id="modal-edit-org">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Edit CRM Organization</span>
+      <button class="modal-close" onclick="closeModal('modal-edit-org')">&times;</button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="editOrg">
+      <input type="hidden" name="orgId" id="edit-org-id">
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group full">
+            <label>Display Name *</label>
+            <input type="text" name="displayName" id="edit-org-name" required>
+          </div>
+          <div class="form-group full">
+            <label>Instance URL *</label>
+            <input type="text" name="instanceUrl" id="edit-org-url" placeholder="https://yourorg.my.salesforce.com" required>
+            <span class="field-hint">Use the <code>my.salesforce.com</code> domain — not the Lightning UI URL.</span>
+          </div>
+          <div class="form-group">
+            <label>MC Child BU MID *</label>
+            <input type="text" name="mcBuMid" id="edit-org-mid" required>
+          </div>
+          <div class="form-group">
+            <label>Connected App Client ID *</label>
+            <input type="text" name="clientId" id="edit-org-cid" required>
+          </div>
+          <div class="form-group full">
+            <label>Connected App Client Secret</label>
+            <input type="text" name="clientSecret" id="edit-org-sec" placeholder="Leave blank to keep existing secret">
+            <span class="field-hint">Only enter a value to replace the stored secret.</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-edit-org')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Add Field Modal -->
+<div class="modal-overlay" id="modal-add-field">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Add Subscription Field</span>
+      <button class="modal-close" onclick="closeModal('modal-add-field')">&times;</button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="addField">
+      <input type="hidden" name="orgId" id="add-field-orgid">
+      <div class="modal-body">
+        <p style="margin-bottom:16px;color:var(--gray-4);font-size:13px;">
+          Find field API names in Salesforce: <strong>Setup → Object Manager → [Object] → Fields &amp; Relationships</strong>.
+        </p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Salesforce Object API Name *</label>
+            <input type="text" name="sfObject" id="add-field-obj" placeholder="e.g. Contact" required>
+            <span class="field-hint">Case-sensitive API name (not the label).</span>
+          </div>
+          <div class="form-group">
+            <label>Field API Name *</label>
+            <input type="text" name="fieldApiName" id="add-field-api" placeholder="e.g. UK_Email_Benefits__c" required>
+            <span class="field-hint">Include __c suffix for custom fields.</span>
+          </div>
+          <div class="form-group">
+            <label>Display Label *</label>
+            <input type="text" name="displayLabel" id="add-field-label" placeholder="e.g. Benefits &amp; Perks Email" required>
+            <span class="field-hint">Shown to subscribers on the preference form.</span>
+          </div>
+          <div class="form-group">
+            <label>Field Type *</label>
+            <select name="fieldType" id="add-field-type" required>
+              <option value="">— Select —</option>
+              <option value="boolean">Boolean (checkbox / opt-in)</option>
+              <option value="string">String (text)</option>
+              <option value="picklist">Picklist</option>
+              <option value="date">Date</option>
+              <option value="datetime">DateTime</option>
+              <option value="email">Email</option>
+              <option value="phone">Phone</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Sort Order</label>
+            <input type="number" name="sortOrder" id="add-field-sort" value="99" min="1" max="999">
+            <span class="field-hint">Lower numbers appear first on the form.</span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-add-field')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Field</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Field Modal -->
+<div class="modal-overlay" id="modal-edit-field">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Edit Field</span>
+      <button class="modal-close" onclick="closeModal('modal-edit-field')">&times;</button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="updateField">
+      <input type="hidden" name="fieldId" id="edit-field-id">
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group full">
+            <label>Display Label *</label>
+            <input type="text" name="displayLabel" id="edit-field-label" required>
+          </div>
+          <div class="form-group">
+            <label>Sort Order</label>
+            <input type="number" name="sortOrder" id="edit-field-order" min="1" max="999">
+          </div>
+          <div class="form-group">
+            <label>Active on Preference Form</label>
+            <select name="isActive" id="edit-field-active">
+              <option value="true">Yes</option>
+              <option value="false">No (hidden)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-edit-field')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Remove Field Confirm Modal -->
+<div class="modal-overlay" id="modal-remove-field">
+  <div class="modal modal-sm">
+    <div class="modal-header">
+      <span class="modal-title">Remove Field</span>
+      <button class="modal-close" onclick="closeModal('modal-remove-field')">&times;</button>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="action" value="removeField">
+      <input type="hidden" name="fieldId" id="remove-field-id">
+      <div class="modal-body">
+        <p class="confirm-text">Remove <strong id="remove-field-label"></strong> from the subscription center?</p>
+        <p class="confirm-warn">The underlying Salesforce field and synchronized DE column are not affected. This only removes the field from the subscriber-facing preference form.</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('modal-remove-field')">Cancel</button>
+        <button type="submit" class="btn btn-danger">Remove</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+</div><!-- /container -->
+
+<!-- ══════════════════════════════════════════════════════════════════════════
+     CLIENT-SIDE JAVASCRIPT
+     ══════════════════════════════════════════════════════════════════════════ -->
+<!-- Data injected from SSJS — rendered as a script block before client JS runs -->
+<script runat="server">
+  Write('<script>');
+  Write('var ALL_ORGS   = '       + (orgsJson   || '[]')  + ';');
+  Write('var ALL_FIELDS = '       + (fieldsJson || '[]')  + ';');
+  Write('var BROWSER_STATE   = "' + browserState          + '";');
+  Write('var BROWSER_ORG_ID  = "' + browserOrgId          + '";');
+  Write('var BROWSER_SEL_OBJ = "' + sfSelectedObj         + '";');
+  Write('var SF_OBJECTS_RAW  = '  + sfObjectsJson         + ';');
+  Write('var SF_FIELDS_RAW   = '  + sfFieldsJson          + ';');
+  Write('<\/script>');
+</script>
+
+<script>
+/* ── Client state is pre-loaded from ALL_ORGS / ALL_FIELDS above ─────────── */
+
+/* ── State ───────────────────────────────────────────────────────────────── */
+var currentBrowserOrgId = null;  // org selected when Add Field modal opens
+
+/* ══════════════════════════════════════════════════════════════════════════
+   TABS
+   ══════════════════════════════════════════════════════════════════════════ */
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MODALS
+   ══════════════════════════════════════════════════════════════════════════ */
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+// Close on backdrop click
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', function(e) {
+    if (e.target === el) el.classList.remove('open');
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ORG TABLE
+   ══════════════════════════════════════════════════════════════════════════ */
+function renderOrgsTable() {
+  var tbody = document.getElementById('orgs-tbody');
+  if (!ALL_ORGS || ALL_ORGS.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No organizations registered yet. Click "Add Organization" to get started.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = ALL_ORGS.map(function(o) {
+    return '<tr>' +
+      '<td><strong>' + esc(o.DisplayName) + '</strong></td>' +
+      '<td class="mono">' + esc(o.OrgID) + '</td>' +
+      '<td class="mono" style="font-size:11px">' + esc(o.InstanceURL) + '</td>' +
+      '<td class="mono">' + esc(o.MCBUMID) + '</td>' +
+      '<td><span class="badge badge-green">Active</span></td>' +
+      '<td>' +
+        '<button class="btn btn-ghost btn-sm" style="margin-right:6px" onclick="openEditOrg(' + JSON.stringify(o) + ')">Edit</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="confirmRemoveOrg(\'' + esc(o.OrgID) + '\',\'' + esc(o.DisplayName) + '\')">Deactivate</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function confirmRemoveOrg(orgId, name) {
+  document.getElementById('remove-org-id').value  = orgId;
+  document.getElementById('remove-org-name').textContent = name;
+  openModal('modal-remove-org');
+}
+
+function openEditOrg(o) {
+  document.getElementById('edit-org-id').value  = o.OrgID;
+  document.getElementById('edit-org-name').value = o.DisplayName;
+  document.getElementById('edit-org-url').value  = o.InstanceURL;
+  document.getElementById('edit-org-mid').value  = o.MCBUMID;
+  document.getElementById('edit-org-cid').value  = o.SFClientID || '';
+  document.getElementById('edit-org-sec').value  = '';  // never pre-fill secret
+  openModal('modal-edit-org');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   FIELDS TABLE
+   ══════════════════════════════════════════════════════════════════════════ */
+function populateOrgSelect() {
+  var sel = document.getElementById('field-org-select');
+  ALL_ORGS.forEach(function(o) {
+    var opt = document.createElement('option');
+    opt.value       = o.OrgID;
+    opt.textContent = o.DisplayName;
+    sel.appendChild(opt);
+  });
+}
+
+function renderFieldsTable() {
+  var orgId = document.getElementById('field-org-select').value;
+  document.getElementById('browse-btn').disabled = !orgId;
+  var tbody = document.getElementById('fields-tbody');
+  var label = document.getElementById('fields-org-label');
+
+  if (!orgId) {
+    label.textContent = 'Select an org to view its fields';
+    tbody.innerHTML   = '<tr class="empty-row"><td colspan="7">Select an organization above</td></tr>';
+    return;
+  }
+
+  var org    = ALL_ORGS.find(function(o) { return o.OrgID === orgId; });
+  label.textContent = org ? org.DisplayName : orgId;
+
+  var fields = ALL_FIELDS.filter(function(f) { return f.OrgID === orgId; });
+
+  if (fields.length === 0) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="7">No fields registered for this org. Use "Browse &amp; Add Fields" to add some.</td></tr>';
+    return;
+  }
+
+  fields.sort(function(a,b) { return parseInt(a.SortOrder||99) - parseInt(b.SortOrder||99); });
+
+  tbody.innerHTML = fields.map(function(f) {
+    return '<tr>' +
+      '<td><strong>' + esc(f.DisplayLabel) + '</strong></td>' +
+      '<td class="mono">' + esc(f.SFObjectName)  + '</td>' +
+      '<td class="mono">' + esc(f.FieldAPIName)   + '</td>' +
+      '<td><span class="badge badge-blue">' + esc(f.FieldType) + '</span></td>' +
+      '<td>' + esc(f.SortOrder) + '</td>' +
+      '<td><span class="badge badge-green">Active</span></td>' +
+      '<td>' +
+        '<button class="btn btn-ghost btn-sm" style="margin-right:6px" onclick="openEditField(\'' + esc(f.FieldID) + '\',\'' + esc(f.DisplayLabel) + '\',' + parseInt(f.SortOrder||99) + ')">Edit</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="confirmRemoveField(\'' + esc(f.FieldID) + '\',\'' + esc(f.DisplayLabel) + '\')">Remove</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function openEditField(fieldId, label, order) {
+  document.getElementById('edit-field-id').value    = fieldId;
+  document.getElementById('edit-field-label').value = label;
+  document.getElementById('edit-field-order').value = order;
+  openModal('modal-edit-field');
+}
+
+function confirmRemoveField(fieldId, label) {
+  document.getElementById('remove-field-id').value          = fieldId;
+  document.getElementById('remove-field-label').textContent = label;
+  openModal('modal-remove-field');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ADD FIELD
+   ══════════════════════════════════════════════════════════════════════════ */
+function openAddField() {
+  var orgId = document.getElementById('field-org-select').value;
+  if (!orgId) return;
+  document.getElementById('add-field-orgid').value = orgId;
+  // Clear previous values
+  document.getElementById('add-field-obj').value   = '';
+  document.getElementById('add-field-api').value   = '';
+  document.getElementById('add-field-label').value = '';
+  document.getElementById('add-field-type').value  = '';
+  document.getElementById('add-field-sort').value  = '99';
+  openModal('modal-add-field');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   UTILITY
+   ══════════════════════════════════════════════════════════════════════════ */
+function esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&#39;');
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   INIT
+   ══════════════════════════════════════════════════════════════════════════ */
+renderOrgsTable();
+populateOrgSelect();
+
+// Pre-select the single org if there's only one
+if (ALL_ORGS && ALL_ORGS.length === 1) {
+  document.getElementById('field-org-select').value = ALL_ORGS[0].OrgID;
+  renderFieldsTable();
+}
+
+</script>
+
+
+</body>
+</html>

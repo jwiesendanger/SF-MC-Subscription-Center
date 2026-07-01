@@ -1,0 +1,153 @@
+%%[
+/*
+  UK Academic (Ed Cloud) Child BU — Relay CloudPage
+  Location: ACADEMIC CHILD Business Unit > CloudPages
+
+  REPLACE BEFORE PUBLISHING:
+    REPLACE_WITH_PARENT_PREF_CENTER_URL  → Published URL of the Parent CloudPage
+    REPLACE_WITH_THIS_PAGE_URL           → Public URL of THIS page (get after first publish)
+    REPLACE_WITH_SYNC_DE_NAME            → Synchronized Contact DE name in THIS BU
+                                           Always use ENT. prefix, e.g. "ENT.Contact_Salesforce_13"
+
+  IMPORTANT PATTERNS VERIFIED IN PRODUCTION:
+  - Use meta http-equiv="refresh" for ALL redirects — Redirect() and HTTPRedirect()
+    cause "page content contains errors" in CloudPages
+  - LookupRows requires ENT. prefix to access Synchronized DEs in most BUs
+  - AttributeValue("_subscriberkey") decrypts the CloudPagesURL token — NOT QueryParameter("sub")
+  - AttributeValue("memberid") returns the sending BU MID directly
+  - Booleans from Sync DE arrive as "True"/"False" (capital T/F) — compare with both cases
+  - RequestURL() inside Concat causes parse error — assign to var first then UrlEncode
+  - writeback URL must be hardcoded (not RequestURL()) due to CloudPagesURL token context
+*/
+
+VAR @action, @subKey, @sendingMID
+VAR @parentURL, @myURL, @syncDEName
+VAR @redirectURL, @unsubURL, @confirmURL
+VAR @row, @rowCount, @sfID, @updateStatus
+VAR @globalUnsub, @p_newsletters, @p_events, @p_alerts
+VAR @p_academic, @p_recruitment, @p_alumnidonor, @p_healthwellness
+VAR @jobID, @listID, @batchID
+
+SET @action     = QueryParameter("action")
+SET @subKey     = AttributeValue("_subscriberkey")
+SET @sendingMID = AttributeValue("memberid")
+SET @jobID      = AttributeValue("jobid")
+SET @listID     = AttributeValue("listid")
+SET @batchID    = AttributeValue("_batchid")
+
+SET @parentURL  = "REPLACE_WITH_PARENT_PREF_CENTER_URL"
+SET @myURL      = "REPLACE_WITH_THIS_PAGE_URL"    /* hardcoded public URL of THIS page */
+SET @syncDEName = "REPLACE_WITH_SYNC_DE_NAME"      /* e.g. ENT.Contact_Salesforce_13 */
+
+IF @action == "write" THEN
+  /* Params come as plain QueryParameters from the parent page redirect */
+  SET @subKey           = QueryParameter("sub")
+  SET @sendingMID       = QueryParameter("mid")
+  SET @globalUnsub      = QueryParameter("globalunsub")
+  SET @p_newsletters    = QueryParameter("p_newsletters")
+  SET @p_events         = QueryParameter("p_events")
+  SET @p_alerts         = QueryParameter("p_alerts")
+  SET @p_academic       = QueryParameter("p_academic")
+  SET @p_recruitment    = QueryParameter("p_recruitment")
+  SET @p_alumnidonor    = QueryParameter("p_alumnidonor")
+  SET @p_healthwellness = QueryParameter("p_healthwellness")
+
+  SET @row      = LookupRows(@syncDEName, "Id", @subKey)
+  SET @rowCount = RowCount(@row)
+
+  IF @rowCount > 0 THEN
+    SET @sfID = Field(Row(@row,1), "Id")
+    SET @updateStatus = UpdateSingleSalesforceObject(
+      "Contact", @sfID,
+      "HasOptedOutOfEmail",         @globalUnsub,
+      "DoNotContact",               @globalUnsub,
+      "CommPref_Newsletters__c",    @p_newsletters,
+      "CommPref_Events__c",         @p_events,
+      "CommPref_Alerts__c",         @p_alerts,
+      "CommPref_Academic__c",       @p_academic,
+      "CommPref_Recruitment__c",    @p_recruitment,
+      "CommPref_AlumniDonor__c",    @p_alumnidonor,
+      "CommPref_HealthWellness__c", @p_healthwellness
+    )
+  ENDIF
+
+  SET @confirmURL = Concat(@parentURL,
+    "?action=confirm",
+    "&sub=",         UrlEncode(@subKey),
+    "&mid=",         UrlEncode(@sendingMID),
+    "&globalunsub=", @globalUnsub
+  )
+
+ELSEIF @action == "unsub" THEN
+  SET @unsubURL = Concat(@parentURL,
+    "?action=unsub",
+    "&sub=",       UrlEncode(@subKey),
+    "&mid=",       UrlEncode(@sendingMID),
+    "&jobid=",     UrlEncode(@jobID),
+    "&listid=",    UrlEncode(@listID),
+    "&batchid=",   UrlEncode(@batchID),
+    "&writeback=", UrlEncode(@myURL),
+    "&orgname=",   UrlEncode("Academic (Ed Cloud)")
+  )
+
+ELSE
+  /* action=prefs or action=load — read CRM and redirect to parent with values */
+  SET @row      = LookupRows(@syncDEName, "Id", @subKey)
+  SET @rowCount = RowCount(@row)
+
+  IF @rowCount == 0 THEN
+    /* Fallback: subscriber key may be SLCM Person ID in Academic org */
+    SET @row      = LookupRows(@syncDEName, "SLCM_Person_ID__c", @subKey)
+    SET @rowCount = RowCount(@row)
+  ENDIF
+
+  IF @rowCount > 0 THEN
+    SET @globalUnsub      = Field(Row(@row,1), "HasOptedOutOfEmail")
+    SET @p_newsletters    = IIF(Field(Row(@row,1), "CommPref_Newsletters__c")    == "True", "true", IIF(Field(Row(@row,1), "CommPref_Newsletters__c")    == "true", "true", "false"))
+    SET @p_events         = IIF(Field(Row(@row,1), "CommPref_Events__c")         == "True", "true", IIF(Field(Row(@row,1), "CommPref_Events__c")         == "true", "true", "false"))
+    SET @p_alerts         = IIF(Field(Row(@row,1), "CommPref_Alerts__c")         == "True", "true", IIF(Field(Row(@row,1), "CommPref_Alerts__c")         == "true", "true", "false"))
+    SET @p_academic       = IIF(Field(Row(@row,1), "CommPref_Academic__c")       == "True", "true", IIF(Field(Row(@row,1), "CommPref_Academic__c")       == "true", "true", "false"))
+    SET @p_recruitment    = IIF(Field(Row(@row,1), "CommPref_Recruitment__c")    == "True", "true", IIF(Field(Row(@row,1), "CommPref_Recruitment__c")    == "true", "true", "false"))
+    SET @p_alumnidonor    = IIF(Field(Row(@row,1), "CommPref_AlumniDonor__c")    == "True", "true", IIF(Field(Row(@row,1), "CommPref_AlumniDonor__c")    == "true", "true", "false"))
+    SET @p_healthwellness = IIF(Field(Row(@row,1), "CommPref_HealthWellness__c") == "True", "true", IIF(Field(Row(@row,1), "CommPref_HealthWellness__c") == "true", "true", "false"))
+  ELSE
+    SET @globalUnsub      = "false"
+    SET @p_newsletters    = "true"
+    SET @p_events         = "true"
+    SET @p_alerts         = "true"
+    SET @p_academic       = "true"
+    SET @p_recruitment    = "true"
+    SET @p_alumnidonor    = "true"
+    SET @p_healthwellness = "true"
+  ENDIF
+
+  SET @redirectURL = Concat(@parentURL,
+    "?action=load",
+    "&sub=",              UrlEncode(@subKey),
+    "&mid=",              UrlEncode(@sendingMID),
+    "&orgname=",          UrlEncode("Academic (Ed Cloud)"),
+    "&writeback=",        UrlEncode(@myURL),
+    "&globalunsub=",      @globalUnsub,
+    "&p_newsletters=",    @p_newsletters,
+    "&p_events=",         @p_events,
+    "&p_alerts=",         @p_alerts,
+    "&p_academic=",       @p_academic,
+    "&p_recruitment=",    @p_recruitment,
+    "&p_alumnidonor=",    @p_alumnidonor,
+    "&p_healthwellness=", @p_healthwellness
+  )
+ENDIF
+]%%
+<html>
+<head>
+<meta charset="UTF-8"/>
+%%[ IF @action == "write" THEN ]%%
+<meta http-equiv="refresh" content="0;url=%%=v(@confirmURL)=%%"/>
+%%[ ELSEIF @action == "unsub" THEN ]%%
+<meta http-equiv="refresh" content="0;url=%%=v(@unsubURL)=%%"/>
+%%[ ELSE ]%%
+<meta http-equiv="refresh" content="0;url=%%=v(@redirectURL)=%%"/>
+%%[ ENDIF ]%%
+</head>
+<body><p>Loading...</p></body>
+</html>

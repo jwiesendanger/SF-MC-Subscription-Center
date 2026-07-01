@@ -1,0 +1,148 @@
+%%[
+/*
+  UK RADAR (Alumni-Philanthropy) Child BU — Relay CloudPage
+  Location: ALUMNI-PHILANTHROPY CHILD Business Unit > CloudPages
+
+  REPLACE BEFORE PUBLISHING:
+    REPLACE_WITH_PARENT_PREF_CENTER_URL  → Published URL of the Parent CloudPage
+    REPLACE_WITH_THIS_PAGE_URL           → Public URL of THIS page (get after first publish)
+    REPLACE_WITH_SYNC_DE_NAME            → Synchronized Contact DE name in THIS BU
+                                           Always use ENT. prefix, e.g. "ENT.Contact_Salesforce_13"
+
+  RADAR-specific notes:
+  - Subscriber keys are Salesforce Contact IDs (003...) — no SLCM fallback needed
+  - RADAR Subscription__c legacy object stays intact for Radar 2.0
+    This page writes CommPref_* fields on Contact only
+  - ent.Contact_Salesforce_13 from old RADAR footer is replaced by this pattern
+
+  IMPORTANT PATTERNS VERIFIED IN PRODUCTION:
+  - Use meta http-equiv="refresh" — Redirect()/HTTPRedirect() cause parse errors in CloudPages
+  - LookupRows requires ENT. prefix for Synchronized DEs in most BUs
+  - AttributeValue("_subscriberkey") decrypts CloudPagesURL token — NOT QueryParameter("sub")
+  - Booleans from Sync DE arrive as "True"/"False" (capital T/F)
+  - writeback URL must be hardcoded in @myURL — do NOT use RequestURL() inside Concat
+*/
+
+VAR @action, @subKey, @sendingMID
+VAR @parentURL, @myURL, @syncDEName
+VAR @redirectURL, @unsubURL, @confirmURL
+VAR @row, @rowCount, @sfID, @updateStatus
+VAR @globalUnsub, @p_newsletters, @p_events, @p_alerts
+VAR @p_academic, @p_recruitment, @p_alumnidonor, @p_healthwellness
+VAR @jobID, @listID, @batchID
+
+SET @action     = QueryParameter("action")
+SET @subKey     = AttributeValue("_subscriberkey")
+SET @sendingMID = AttributeValue("memberid")
+SET @jobID      = AttributeValue("jobid")
+SET @listID     = AttributeValue("listid")
+SET @batchID    = AttributeValue("_batchid")
+
+SET @parentURL  = "REPLACE_WITH_PARENT_PREF_CENTER_URL"
+SET @myURL      = "REPLACE_WITH_THIS_PAGE_URL"
+SET @syncDEName = "REPLACE_WITH_SYNC_DE_NAME"
+
+IF @action == "write" THEN
+  SET @subKey           = QueryParameter("sub")
+  SET @sendingMID       = QueryParameter("mid")
+  SET @globalUnsub      = QueryParameter("globalunsub")
+  SET @p_newsletters    = QueryParameter("p_newsletters")
+  SET @p_events         = QueryParameter("p_events")
+  SET @p_alerts         = QueryParameter("p_alerts")
+  SET @p_academic       = QueryParameter("p_academic")
+  SET @p_recruitment    = QueryParameter("p_recruitment")
+  SET @p_alumnidonor    = QueryParameter("p_alumnidonor")
+  SET @p_healthwellness = QueryParameter("p_healthwellness")
+
+  SET @row      = LookupRows(@syncDEName, "Id", @subKey)
+  SET @rowCount = RowCount(@row)
+
+  IF @rowCount > 0 THEN
+    SET @sfID = Field(Row(@row,1), "Id")
+    SET @updateStatus = UpdateSingleSalesforceObject(
+      "Contact", @sfID,
+      "HasOptedOutOfEmail",         @globalUnsub,
+      "DoNotContact",               @globalUnsub,
+      "CommPref_Newsletters__c",    @p_newsletters,
+      "CommPref_Events__c",         @p_events,
+      "CommPref_Alerts__c",         @p_alerts,
+      "CommPref_Academic__c",       @p_academic,
+      "CommPref_Recruitment__c",    @p_recruitment,
+      "CommPref_AlumniDonor__c",    @p_alumnidonor,
+      "CommPref_HealthWellness__c", @p_healthwellness
+    )
+  ENDIF
+
+  SET @confirmURL = Concat(@parentURL,
+    "?action=confirm",
+    "&sub=",         UrlEncode(@subKey),
+    "&mid=",         UrlEncode(@sendingMID),
+    "&globalunsub=", @globalUnsub
+  )
+
+ELSEIF @action == "unsub" THEN
+  SET @unsubURL = Concat(@parentURL,
+    "?action=unsub",
+    "&sub=",       UrlEncode(@subKey),
+    "&mid=",       UrlEncode(@sendingMID),
+    "&jobid=",     UrlEncode(@jobID),
+    "&listid=",    UrlEncode(@listID),
+    "&batchid=",   UrlEncode(@batchID),
+    "&writeback=", UrlEncode(@myURL),
+    "&orgname=",   UrlEncode("Alumni-Philanthropy (RADAR)")
+  )
+
+ELSE
+  SET @row      = LookupRows(@syncDEName, "Id", @subKey)
+  SET @rowCount = RowCount(@row)
+
+  IF @rowCount > 0 THEN
+    SET @globalUnsub      = Field(Row(@row,1), "HasOptedOutOfEmail")
+    SET @p_newsletters    = IIF(Field(Row(@row,1), "CommPref_Newsletters__c")    == "True", "true", IIF(Field(Row(@row,1), "CommPref_Newsletters__c")    == "true", "true", "false"))
+    SET @p_events         = IIF(Field(Row(@row,1), "CommPref_Events__c")         == "True", "true", IIF(Field(Row(@row,1), "CommPref_Events__c")         == "true", "true", "false"))
+    SET @p_alerts         = IIF(Field(Row(@row,1), "CommPref_Alerts__c")         == "True", "true", IIF(Field(Row(@row,1), "CommPref_Alerts__c")         == "true", "true", "false"))
+    SET @p_academic       = IIF(Field(Row(@row,1), "CommPref_Academic__c")       == "True", "true", IIF(Field(Row(@row,1), "CommPref_Academic__c")       == "true", "true", "false"))
+    SET @p_recruitment    = IIF(Field(Row(@row,1), "CommPref_Recruitment__c")    == "True", "true", IIF(Field(Row(@row,1), "CommPref_Recruitment__c")    == "true", "true", "false"))
+    SET @p_alumnidonor    = IIF(Field(Row(@row,1), "CommPref_AlumniDonor__c")    == "True", "true", IIF(Field(Row(@row,1), "CommPref_AlumniDonor__c")    == "true", "true", "false"))
+    SET @p_healthwellness = IIF(Field(Row(@row,1), "CommPref_HealthWellness__c") == "True", "true", IIF(Field(Row(@row,1), "CommPref_HealthWellness__c") == "true", "true", "false"))
+  ELSE
+    SET @globalUnsub      = "false"
+    SET @p_newsletters    = "true"
+    SET @p_events         = "true"
+    SET @p_alerts         = "true"
+    SET @p_academic       = "true"
+    SET @p_recruitment    = "true"
+    SET @p_alumnidonor    = "true"
+    SET @p_healthwellness = "true"
+  ENDIF
+
+  SET @redirectURL = Concat(@parentURL,
+    "?action=load",
+    "&sub=",              UrlEncode(@subKey),
+    "&mid=",              UrlEncode(@sendingMID),
+    "&orgname=",          UrlEncode("Alumni-Philanthropy (RADAR)"),
+    "&writeback=",        UrlEncode(@myURL),
+    "&globalunsub=",      @globalUnsub,
+    "&p_newsletters=",    @p_newsletters,
+    "&p_events=",         @p_events,
+    "&p_alerts=",         @p_alerts,
+    "&p_academic=",       @p_academic,
+    "&p_recruitment=",    @p_recruitment,
+    "&p_alumnidonor=",    @p_alumnidonor,
+    "&p_healthwellness=", @p_healthwellness
+  )
+ENDIF
+]%%
+<html>
+<head>
+<meta charset="UTF-8"/>
+%%[ IF @action == "write" THEN ]%%
+<meta http-equiv="refresh" content="0;url=%%=v(@confirmURL)=%%"/>
+%%[ ELSEIF @action == "unsub" THEN ]%%
+<meta http-equiv="refresh" content="0;url=%%=v(@unsubURL)=%%"/>
+%%[ ELSE ]%%
+<meta http-equiv="refresh" content="0;url=%%=v(@redirectURL)=%%"/>
+%%[ ENDIF ]%%
+</head>
+<body><p>Loading...</p></body>
+</html>

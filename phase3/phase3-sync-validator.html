@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<!--
+  Phase 3 — Sync Validation Cloud Page
+  UK Centralized Subscription Center | Human Resources POC
+  ──────────────────────────────────────────────────────────
+  PURPOSE
+    Reads SubscriptionConfig_Fields (parent BU) for the HR org,
+    then probes the HR synchronized DE for each registered field
+    column. Reports pass/fail per field and shows a sample value
+    from a live contact record.
+
+  SETUP BEFORE PUBLISHING
+    1. Set HR_ORG_ID to the 18-character Salesforce Org ID for the HR org.
+    2. Set HR_SYNCED_DE_NAME to the synced DE name INCLUDING the ENT. prefix.
+       Verified-in-production pattern: LookupRows fails silently (returns 0 rows)
+       without the ENT. prefix, even when the DE external key appears correct.
+       Example: "ENT.Contact_Salesforce_13"  — NOT "Contact_Salesforce_13"
+       Find the exact name in the HR child BU > Contact Builder > Data Extensions
+       (filter by Synchronized), then prepend ENT.
+    3. Publish to the PARENT BU as an internal cloud page.
+    4. Access while logged into Marketing Cloud (MC SSO session required).
+-->
+<script runat="server" language="JavaScript">
+Platform.Load("Core", "1.1.5");
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CONFIGURATION — update these two values before publishing
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var HR_ORG_ID         = "00D000000000000AAA";   // ← Replace with actual 18-char Org ID
+var HR_SYNCED_DE_NAME = "ENT.Contact_Salesforce_XX"; // ← ENT. prefix REQUIRED. Replace suffix with actual DE name from Contact Builder (HR child BU).
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ── Helpers ───────────────────────────────────────────────
+function h(s) {
+  if (s === null || s === undefined) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function isoNow() {
+  var d = new Date();
+  return d.getFullYear() + "-"
+    + ("0"+(d.getMonth()+1)).slice(-2) + "-"
+    + ("0"+d.getDate()).slice(-2) + " "
+    + ("0"+d.getHours()).slice(-2) + ":"
+    + ("0"+d.getMinutes()).slice(-2) + ":"
+    + ("0"+d.getSeconds()).slice(-2) + " UTC";
+}
+
+function propsToObj(row) {
+  var o = {};
+  if (row && row.Properties) {
+    for (var i = 0; i < row.Properties.length; i++) {
+      o[row.Properties[i].Name] = row.Properties[i].Value;
+    }
+  }
+  return o;
+}
+
+// ── MC SSO session guard ──────────────────────────────────
+var isAuthorized = false;
+try {
+  var uid = Platform.Function.AuthenticatedMemberID();
+  if (uid && uid.toString().length > 0) { isAuthorized = true; }
+} catch(ignore) {}
+
+var generatedAt = isoNow();
+
+// ── Early exit: no session ────────────────────────────────
+if (!isAuthorized) {
+  Write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Access Denied</title>'
+    + '<style>body{font-family:Arial,sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#F0F4F8}'
+    + '.box{background:#fff;border:1px solid #C0392B;border-radius:6px;padding:40px;max-width:480px;text-align:center}'
+    + 'h2{color:#C0392B;margin-bottom:12px}p{color:#555;font-size:13px;line-height:1.6}'
+    + '</style></head><body><div class="box">'
+    + '<h2>Access Denied</h2>'
+    + '<p>This page requires an active Marketing Cloud session.<br>'
+    + 'Log in to Marketing Cloud before accessing this URL.</p>'
+    + '</div></body></html>');
+  Platform.Response.End();
+}
+
+// ── Step 1: Load org metadata ─────────────────────────────
+var orgRecord = null;
+var orgError  = "";
+try {
+  var prox1 = new Script.Util.WSProxy();
+  var orgRes = prox1.retrieve(
+    "DataExtensionObject[SubscriptionConfig_Orgs]",
+    ["OrgID","DisplayName","InstanceURL","MCBUMID","IsActive","ModifiedDate"],
+    { Property: "OrgID", SimpleOperator: "equals", Value: HR_ORG_ID }
+  );
+  if (orgRes && orgRes.Results && orgRes.Results.length > 0) {
+    orgRecord = propsToObj(orgRes.Results[0]);
+  } else {
+    orgError = "Org ID '" + HR_ORG_ID + "' not found in SubscriptionConfig_Orgs. "
+             + "Verify the org is registered via the admin tool and that HR_ORG_ID matches exactly.";
+  }
+} catch(e) {
+  orgError = "Error reading SubscriptionConfig_Orgs: " + Stringify(e);
+}
+
+// ── Step 2: Load registered fields ────────────────────────
+var registeredFields = [];
+var fieldsError      = "";
+if (!orgError) {
+  try {
+    var prox2 = new Script.Util.WSProxy();
+    var fCols   = ["FieldID","OrgID","SFObjectName","FieldAPIName","DisplayLabel","FieldType","SortOrder","IsActive"];
+    var fFilter = {
+      "LeftOperand":  { Property: "OrgID",    SimpleOperator: "equals", Value: HR_ORG_ID },
+      "LogicalOperator": "AND",
+      "RightOperand": { Property: "IsActive", SimpleOperator: "equals", Value: 1 }
+    };
+    var fRes = prox2.retrieve("DataExtensionObject[SubscriptionConfig_Fields]", fCols, fFilter);
+    if (fRes && fRes.Results) {
+      for (var ri = 0; ri < fRes.Results.length; ri++) {
+        registeredFields.push(propsToObj(fRes.Results[ri]));
+      }
+      registeredFields.sort(function(a, b) {
+        return (parseInt(a.SortOrder, 10) || 99) - (parseInt(b.SortOrder, 10) || 99);
+      });
+    }
+  } catch(e) {
+    fieldsError = "Error reading SubscriptionConfig_Fields: " + Stringify(e);
+  }
+}
+
+// ── Step 3: Probe synced DE for each registered field ─────
+var fieldResults = [];
+for (var fi = 0; fi < registeredFields.length; fi++) {
+  var fld = registeredFields[fi];
+  var apiName = fld.FieldAPIName;
+  var result  = {
+    FieldAPIName: apiName,
+    SFObjectName: fld.SFObjectName,
+    DisplayLabel: fld.DisplayLabel,
+    FieldType:    fld.FieldType,
+    ColumnFound:  false,
+    SampleValue:  null,
+    SampleKey:    null,
+    ErrorMsg:     ""
+  };
+
+  try {
+    var prox3 = new Script.Util.WSProxy();
+    // Retrieve 1 row containing ContactKey + the target column.
+    // If the column doesn't exist, retrieve throws or returns an error.
+    var deRes = prox3.retrieve(
+      "DataExtensionObject[" + HR_SYNCED_DE_NAME + "]",
+      ["ContactKey", apiName],
+      null,
+      { ResultsPerPage: 1 }
+    );
+
+    if (deRes && deRes.Status === "OK" && deRes.Results && deRes.Results.length > 0) {
+      result.ColumnFound = true;
+      var row = propsToObj(deRes.Results[0]);
+      result.SampleValue = (row[apiName] !== undefined) ? row[apiName] : null;
+      result.SampleKey   = row["ContactKey"] || null;
+    } else if (deRes && deRes.Status === "OK" && (!deRes.Results || deRes.Results.length === 0)) {
+      // Column exists but DE is empty (or all rows filtered out)
+      result.ColumnFound = true;
+      result.SampleValue = "(DE returned no rows — column exists but no data yet)";
+    } else {
+      result.ColumnFound = false;
+      result.ErrorMsg = deRes ? ("Status: " + deRes.Status + " | " + (deRes.Message || "")) : "No response";
+    }
+  } catch(ex) {
+    result.ColumnFound = false;
+    // Surface the error message — commonly contains "column not found" info
+    result.ErrorMsg = Stringify(ex);
+  }
+
+  fieldResults.push(result);
+}
+
+// ── Summary counts ─────────────────────────────────────────
+var passCount = 0;
+var failCount = 0;
+for (var ci = 0; ci < fieldResults.length; ci++) {
+  if (fieldResults[ci].ColumnFound) { passCount++; } else { failCount++; }
+}
+var allPassed = (failCount === 0 && fieldResults.length > 0);
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT HTML
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var out = [];
+
+out.push('<!DOCTYPE html><html lang="en"><head>');
+out.push('<meta charset="UTF-8">');
+out.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
+out.push('<title>Phase 3 — Sync Validator | UK Subscription Center</title>');
+out.push('<style>');
+out.push(':root{--bd:#003B75;--bm:#0033A0;--bl:#D9E6F2;--gn:#1D7A2E;--gnb:#D6EFD8;--or:#BB5500;--orb:#FFF3CD;--rd:#C0392B;--rdb:#FDECEA;--gl:#F5F5F5;--gm:#CCCCCC}');
+out.push('*{box-sizing:border-box;margin:0;padding:0}');
+out.push('body{font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111;background:#F0F4F8}');
+out.push('.ph{background:var(--bd);color:#fff;padding:18px 32px 14px;border-bottom:4px solid #BF9B30}');
+out.push('.ph h1{font-size:20px;font-weight:700}');
+out.push('.ph p{font-size:12px;opacity:.8;margin-top:4px}');
+out.push('.ct{max-width:1100px;margin:28px auto;padding:0 24px 48px}');
+out.push('.card{background:#fff;border:1px solid var(--gm);border-radius:6px;margin-bottom:24px;overflow:hidden}');
+out.push('.ch{background:var(--bd);color:#fff;padding:10px 18px;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}');
+out.push('.cb{padding:18px}');
+out.push('.sg{display:flex;gap:16px;flex-wrap:wrap}');
+out.push('.sc{flex:1;min-width:160px;border:1px solid var(--gm);border-radius:6px;padding:14px 18px;text-align:center}');
+out.push('.sc .n{font-size:36px;font-weight:700}.sc .l{font-size:12px;color:#555;margin-top:4px}');
+out.push('.sp .n{color:var(--gn)}.sp{border-color:var(--gn)}');
+out.push('.sf .n{color:var(--rd)}.sf{border-color:var(--rd)}');
+out.push('.st .n{color:var(--bd)}');
+out.push('.mt{width:100%;border-collapse:collapse;font-size:13px}');
+out.push('.mt td{padding:7px 10px;border-bottom:1px solid #EEE}');
+out.push('.mt td:first-child{font-weight:700;color:#555;width:180px}');
+out.push('.rt{width:100%;border-collapse:collapse;font-size:13px}');
+out.push('.rt thead tr{background:var(--bd);color:#fff}');
+out.push('.rt th{padding:9px 12px;text-align:left;font-weight:600;white-space:nowrap}');
+out.push('.rt tbody tr:nth-child(even){background:var(--gl)}');
+out.push('.rt tbody tr:hover{background:var(--bl)}');
+out.push('.rt td{padding:9px 12px;border-bottom:1px solid #E8E8E8;vertical-align:top}');
+out.push('.bp{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:700;white-space:nowrap}');
+out.push('.bpp{background:var(--gnb);color:var(--gn)}.bpf{background:var(--rdb);color:var(--rd)}');
+out.push('.cd{font-family:"Courier New",monospace;font-size:12px;color:#6B2A8A}');
+out.push('.mu{color:#888;font-style:italic}');
+out.push('.em{color:var(--rd);font-size:11px;margin-top:4px;word-break:break-word}');
+out.push('.al{padding:14px 18px;border-radius:6px;border-left:5px solid;margin-bottom:20px;font-size:13px}');
+out.push('.als{background:var(--gnb);border-color:var(--gn);color:#145221}');
+out.push('.alw{background:var(--orb);border-color:var(--or);color:#7A3800}');
+out.push('.ald{background:var(--rdb);border-color:var(--rd);color:#7A1A10}');
+out.push('.ali{background:var(--bl);border-color:var(--bm);color:var(--bd)}');
+out.push('.al strong{font-weight:700}');
+out.push('.pf{text-align:center;font-size:11px;color:#999;margin-top:40px;padding-top:16px;border-top:1px solid var(--gm)}');
+out.push('</style></head><body>');
+
+// Header
+out.push('<div class="ph"><h1>Phase 3 — Sync Validation Report</h1>');
+out.push('<p>UK Centralized Subscription Center &mdash; Human Resources POC &mdash; Generated: ' + h(generatedAt) + '</p></div>');
+
+out.push('<div class="ct">');
+
+// Org error
+if (orgError) {
+  out.push('<div class="al ald"><strong>Configuration Error:</strong> ' + h(orgError) + '</div>');
+  out.push('</div></body></html>');
+  Write(out.join(""));
+  Platform.Response.End();
+}
+
+// Fields load error
+if (fieldsError) {
+  out.push('<div class="al ald"><strong>Error loading field registrations:</strong> ' + h(fieldsError) + '</div>');
+}
+
+// Overall status banner
+if (allPassed) {
+  out.push('<div class="al als"><strong>&#10003; All fields validated.</strong> Every registered subscription preference field is present in the synced DE and returning data. Phase 3 is complete &mdash; proceed to Phase 4.</div>');
+} else if (failCount > 0) {
+  out.push('<div class="al alw"><strong>&#9888; Action Required.</strong> ' + failCount + ' field(s) could not be found in the synced DE. Review the table below and complete Step 3a in the Phase 3 Admin Guide before proceeding to Phase 4.</div>');
+} else if (fieldResults.length === 0 && !fieldsError) {
+  out.push('<div class="al ali"><strong>No fields registered.</strong> No active fields found in SubscriptionConfig_Fields for Org ID <span class="cd">' + h(HR_ORG_ID) + '</span>. Register fields using the admin tool (Phase 2b) before running this validator.</div>');
+}
+
+// Summary stats
+out.push('<div class="card"><div class="ch">Summary</div><div class="cb"><div class="sg">');
+out.push('<div class="sc st"><div class="n">' + registeredFields.length + '</div><div class="l">Fields Registered</div></div>');
+out.push('<div class="sc sp"><div class="n">' + passCount + '</div><div class="l">Column Found &#10003;</div></div>');
+out.push('<div class="sc sf"><div class="n">' + failCount + '</div><div class="l">Column Missing &#10007;</div></div>');
+out.push('</div></div></div>');
+
+// Org metadata card
+if (orgRecord) {
+  out.push('<div class="card"><div class="ch">HR CRM Org &mdash; Configuration Record</div><div class="cb">');
+  out.push('<table class="mt">');
+  out.push('<tr><td>Org ID</td><td class="cd">' + h(orgRecord.OrgID) + '</td></tr>');
+  out.push('<tr><td>Display Name</td><td>' + h(orgRecord.DisplayName) + '</td></tr>');
+  out.push('<tr><td>Instance URL</td><td class="cd">' + h(orgRecord.InstanceURL) + '</td></tr>');
+  out.push('<tr><td>MC BU MID</td><td class="cd">' + h(orgRecord.MCBUMID) + '</td></tr>');
+  out.push('<tr><td>Active</td><td>' + h(orgRecord.IsActive) + '</td></tr>');
+  out.push('<tr><td>Last Modified</td><td>' + h(orgRecord.ModifiedDate) + '</td></tr>');
+  out.push('<tr><td>Synced DE Probed</td><td class="cd">' + h(HR_SYNCED_DE_NAME) + '</td></tr>');
+  out.push('</table></div></div>');
+}
+
+// Field results table
+if (fieldResults.length > 0) {
+  out.push('<div class="card"><div class="ch">Field Validation Results</div>');
+  out.push('<div class="cb" style="padding:0;">');
+  out.push('<table class="rt"><thead><tr>');
+  out.push('<th style="width:28px;">#</th>');
+  out.push('<th>Display Label</th>');
+  out.push('<th>SF Object</th>');
+  out.push('<th>Field API Name</th>');
+  out.push('<th>Field Type</th>');
+  out.push('<th>Column Found</th>');
+  out.push('<th>Sample Value</th>');
+  out.push('<th>Sample ContactKey</th>');
+  out.push('</tr></thead><tbody>');
+
+  for (var ri = 0; ri < fieldResults.length; ri++) {
+    var r = fieldResults[ri];
+    out.push('<tr>');
+    out.push('<td class="mu">' + (ri + 1) + '</td>');
+    out.push('<td><strong>' + h(r.DisplayLabel) + '</strong></td>');
+    out.push('<td class="cd">' + h(r.SFObjectName) + '</td>');
+    out.push('<td class="cd">' + h(r.FieldAPIName) + '</td>');
+    out.push('<td class="mu">' + h(r.FieldType) + '</td>');
+
+    if (r.ColumnFound) {
+      out.push('<td><span class="bp bpp">&#10003; Found</span></td>');
+    } else {
+      out.push('<td><span class="bp bpf">&#10007; Missing</span>');
+      if (r.ErrorMsg) {
+        out.push('<div class="em">' + h(r.ErrorMsg) + '</div>');
+      }
+      out.push('</td>');
+    }
+
+    var sv = (r.SampleValue !== null && r.SampleValue !== undefined && r.SampleValue !== "")
+      ? '<span class="cd">' + h(r.SampleValue) + '</span>'
+      : '<span class="mu">&mdash;</span>';
+    out.push('<td>' + sv + '</td>');
+
+    var sk = (r.SampleKey !== null && r.SampleKey !== undefined && r.SampleKey !== "")
+      ? '<span class="cd" style="font-size:11px;">' + h(r.SampleKey) + '</span>'
+      : '<span class="mu">&mdash;</span>';
+    out.push('<td>' + sk + '</td>');
+    out.push('</tr>');
+  }
+
+  out.push('</tbody></table></div></div>');
+}
+
+// Remediation card
+if (failCount > 0) {
+  out.push('<div class="card"><div class="ch">Remediation Steps</div><div class="cb">');
+  out.push('<p style="margin-bottom:10px;">For each field showing <strong>&#10007; Missing</strong>, perform the following:</p>');
+  out.push('<ol style="padding-left:20px;line-height:2;">');
+  out.push('<li>In the <strong>HR Salesforce org</strong>, navigate to <strong>Setup &rarr; Marketing Cloud &rarr; Integration</strong>.</li>');
+  out.push('<li>Edit the field mapping for the relevant Salesforce object (see "SF Object" column above).</li>');
+  out.push('<li>Enable the missing field for sync. Save.</li>');
+  out.push('<li>Trigger a manual sync or wait for the next scheduled run (~15 min).</li>');
+  out.push('<li>Reload this page and confirm the field now shows <strong>&#10003; Found</strong>.</li>');
+  out.push('</ol>');
+  out.push('<p style="margin-top:14px;font-size:12px;color:#555;">Refer to <strong>Step 3a</strong> in the Phase 3 Admin Guide for detail.</p>');
+  out.push('</div></div>');
+}
+
+// Phase 4 prep notes — always shown after a full pass or partial pass
+if (fieldResults.length > 0) {
+  out.push('<div class="card"><div class="ch">Phase 4 Prep Notes — Verified Patterns</div><div class="cb">');
+  out.push('<p style="margin-bottom:14px;font-size:13px;">The following behaviors are confirmed from production testing and must be handled correctly in the Phase 4 parent cloud page and Phase 5 child relay pages.</p>');
+  out.push('<table class="mt">');
+  out.push('<tr><td style="vertical-align:top;padding-top:10px;">Boolean format</td><td style="font-size:13px;padding-top:10px;">Fields from the synced DE return as <span class="cd">"True"</span> / <span class="cd">"False"</span> (capital T/F) — <strong>not</strong> lowercase. The parent page must compare against both cases: <span class="cd">IIF(v == "True" OR v == "true", ...)</span></td></tr>');
+  out.push('<tr><td style="vertical-align:top;padding-top:10px;">ENT. prefix</td><td style="font-size:13px;padding-top:10px;"><span class="cd">LookupRows</span> on a synced DE requires the <span class="cd">ENT.</span> prefix in the DE name (e.g. <span class="cd">ENT.Contact_Salesforce_13</span>). Without it, the lookup returns 0 rows silently. This applies to all child relay pages in Phase 5.</td></tr>');
+  out.push('<tr><td style="vertical-align:top;padding-top:10px;">CRM writeback</td><td style="font-size:13px;padding-top:10px;">Preferences are written back to Salesforce via <span class="cd">UpdateSingleSalesforceObject()</span> in AMPscript on the child relay page — not via REST API. This uses the existing MC Connect relationship; no separate OAuth connection is needed. The MC Connect running user must have field-level security (FLS) <strong>write</strong> access to every <span class="cd">CommPref_*</span> field.</td></tr>');
+  out.push('<tr><td style="vertical-align:top;padding-top:10px;">Redirect method</td><td style="font-size:13px;padding-top:10px;"><span class="cd">Redirect()</span> and <span class="cd">HTTPRedirect()</span> cause "page content contains errors" in CloudPages. All redirects must use <span class="cd">&lt;meta http-equiv="refresh" content="0;url=..."&gt;</span>.</td></tr>');
+  out.push('<tr><td style="vertical-align:top;padding-top:10px;">writeback URL</td><td style="font-size:13px;padding-top:10px;"><span class="cd">RequestURL()</span> inside <span class="cd">Concat()</span> causes a parse error. The child relay page\'s own public URL must be hardcoded in a variable, then passed as the <span class="cd">writeback</span> query param.</td></tr>');
+  out.push('<tr><td style="vertical-align:top;padding-top:10px;">Token params</td><td style="font-size:13px;padding-top:10px;">Parameters encrypted by <span class="cd">CloudPagesURL()</span> must be read with <span class="cd">AttributeValue("_subscriberkey")</span> — NOT <span class="cd">QueryParameter("sub")</span>. QueryParameter returns empty for encrypted token params.</td></tr>');
+  out.push('</table></div></div>');
+}
+
+// FLS check reminder — always shown
+out.push('<div class="card"><div class="ch">FLS Verification (Required Before Phase 4)</div><div class="cb">');
+out.push('<p style="font-size:13px;margin-bottom:12px;">A field can appear in the synced DE but still fail on <span class="cd">UpdateSingleSalesforceObject()</span> if the MC Connect running user lacks write access. Verify the following in the HR Salesforce org before proceeding to Phase 4:</p>');
+out.push('<ol style="padding-left:20px;line-height:2;font-size:13px;">');
+out.push('<li>In <strong>Salesforce Setup</strong>, navigate to <strong>Profiles</strong> (or Permission Sets) for the Marketing Cloud Connect integration user.</li>');
+out.push('<li>Open <strong>Field Permissions</strong> for the Contact object.</li>');
+out.push('<li>Confirm <strong>Read Access</strong> and <strong>Edit Access</strong> are both checked for every <span class="cd">CommPref_*</span> field registered in the admin tool.</li>');
+out.push('<li>Also confirm <strong>Edit Access</strong> for <span class="cd">HasOptedOutOfEmail</span> and <span class="cd">DoNotContact</span> — these are written on global unsubscribe.</li>');
+out.push('</ol>');
+out.push('<p style="margin-top:12px;font-size:12px;color:#555;">Missing FLS causes <span class="cd">UpdateSingleSalesforceObject()</span> to return 0 silently — the page appears to save successfully but the CRM record is never updated.</p>');
+out.push('</div></div>');
+
+out.push('<div class="pf">UK Centralized Subscription Center &mdash; Phase 3 Sync Validator &mdash; Internal Tool &mdash; ' + h(generatedAt) + '</div>');
+out.push('</div></body></html>');
+
+Write(out.join(""));
+</script>

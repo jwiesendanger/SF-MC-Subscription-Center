@@ -1,0 +1,415 @@
+%%[
+/*
+  UK Parent BU — Preference Center CloudPage
+  Location: PARENT Business Unit > CloudPages
+  No placeholders — publish directly.
+
+  Flow:
+    Email → Child Relay (action=prefs/unsub) → Child reads CRM → Parent (action=load)
+    Parent renders form → POST → meta refresh to Child (action=write) → Child writes CRM → Parent (action=confirm)
+
+  IMPORTANT PATTERNS VERIFIED IN PRODUCTION:
+  - Use meta http-equiv="refresh" for ALL redirects — Redirect() and HTTPRedirect() cause
+    "page content contains errors" in CloudPages context
+  - writeback URL comes from the child relay via QueryParameter("writeback")
+  - BrandConfig lookup optional — used only for branding (name, logo, color)
+  - WSProxy SSJS block: api.updateItem("Subscriber", {Status:"Unsubscribed"}) — NOT api.invoke("LogUnsubEvent") which is AMPscript-only
+*/
+
+VAR @action, @subKey, @sendingMID, @orgname, @writeBackURL
+VAR @p_newsletters, @p_events, @p_alerts, @globalUnsub
+VAR @p_academic, @p_recruitment, @p_alumnidonor, @p_healthwellness
+VAR @isPost, @formGlobal, @formNL, @formEV, @formAL
+VAR @formAcad, @formRecruit, @formAlumni, @formHealth
+VAR @writeURL, @errorMsg
+VAR @buName, @brandColor, @logoURL, @logoAlt, @footerAddress
+VAR @configRow
+VAR @jobID, @listID, @batchID
+
+SET @action        = QueryParameter("action")
+SET @subKey        = QueryParameter("sub")
+SET @sendingMID    = QueryParameter("mid")
+SET @orgname       = QueryParameter("orgname")
+SET @globalUnsub   = QueryParameter("globalunsub")
+SET @p_newsletters = QueryParameter("p_newsletters")
+SET @p_events      = QueryParameter("p_events")
+SET @p_alerts      = QueryParameter("p_alerts")
+SET @p_academic    = QueryParameter("p_academic")
+SET @p_recruitment = QueryParameter("p_recruitment")
+SET @p_alumnidonor = QueryParameter("p_alumnidonor")
+SET @p_healthwellness = QueryParameter("p_healthwellness")
+SET @writeBackURL  = QueryParameter("writeback")
+SET @jobID         = QueryParameter("jobid")
+SET @listID        = QueryParameter("listid")
+SET @batchID       = QueryParameter("batchid")
+SET @isPost        = "false"
+
+/* Optional: load branding from BrandConfig DE */
+IF NOT Empty(@sendingMID) THEN
+  SET @configRow = LookupRows("UK_PrefCenter_BrandConfig", "MID", @sendingMID)
+  IF RowCount(@configRow) > 0 THEN
+    SET @buName       = Field(Row(@configRow,1), "BUName")
+    SET @brandColor   = Field(Row(@configRow,1), "BrandColor")
+    SET @logoURL      = Field(Row(@configRow,1), "LogoURL")
+    SET @logoAlt      = Field(Row(@configRow,1), "LogoAlt")
+    SET @footerAddress = Field(Row(@configRow,1), "FooterAddress")
+  ENDIF
+ENDIF
+
+/* Fallback branding */
+IF Empty(@buName) THEN
+  SET @buName     = "University of Kentucky"
+  SET @brandColor = "#003DAA"
+  SET @logoURL    = ""
+  SET @logoAlt    = "University of Kentucky"
+ENDIF
+
+/* Block direct access */
+IF Empty(@subKey) AND @action != "confirm" THEN
+  SET @errorMsg = "This link is not valid. Please use the link in your most recent University of Kentucky email."
+ENDIF
+
+/* POST: form submission */
+IF RequestParameter("formAction") == "saveprefs" AND Empty(@errorMsg) THEN
+  SET @isPost       = "true"
+  SET @subKey       = RequestParameter("sub")
+  SET @sendingMID   = RequestParameter("mid")
+  SET @orgname      = RequestParameter("orgname")
+  SET @writeBackURL = RequestParameter("writeback")
+  SET @jobID        = RequestParameter("jobid")
+  SET @listID       = RequestParameter("listid")
+  SET @batchID      = RequestParameter("batchid")
+  SET @formGlobal   = RequestParameter("globalunsub")
+  SET @formNL       = IIF(RequestParameter("p_newsletters")    == "1", "true", "false")
+  SET @formEV       = IIF(RequestParameter("p_events")         == "1", "true", "false")
+  SET @formAL       = IIF(RequestParameter("p_alerts")         == "1", "true", "false")
+  SET @formAcad     = IIF(RequestParameter("p_academic")       == "1", "true", "false")
+  SET @formRecruit  = IIF(RequestParameter("p_recruitment")    == "1", "true", "false")
+  SET @formAlumni   = IIF(RequestParameter("p_alumnidonor")    == "1", "true", "false")
+  SET @formHealth   = IIF(RequestParameter("p_healthwellness") == "1", "true", "false")
+
+  IF @formGlobal == "1" THEN
+    SET @formNL      = "false"
+    SET @formEV      = "false"
+    SET @formAL      = "false"
+    SET @formAcad    = "false"
+    SET @formRecruit = "false"
+    SET @formAlumni  = "false"
+    SET @formHealth  = "false"
+  ENDIF
+
+  SET @writeURL = Concat(@writeBackURL,
+    "?action=write",
+    "&sub=",              UrlEncode(@subKey),
+    "&mid=",              UrlEncode(@sendingMID),
+    "&orgname=",          UrlEncode(@orgname),
+    "&globalunsub=",      IIF(@formGlobal == "1", "true", "false"),
+    "&p_newsletters=",    @formNL,
+    "&p_events=",         @formEV,
+    "&p_alerts=",         @formAL,
+    "&p_academic=",       @formAcad,
+    "&p_recruitment=",    @formRecruit,
+    "&p_alumnidonor=",    @formAlumni,
+    "&p_healthwellness=", @formHealth
+  )
+ENDIF
+
+/* Read params for load and unsub actions */
+IF @action == "load" OR @action == "unsub" THEN
+  SET @writeBackURL  = QueryParameter("writeback")
+  SET @orgname       = QueryParameter("orgname")
+ENDIF
+]%%
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Communication Preferences — University of Kentucky</title>
+  %%[ IF @isPost == "true" THEN ]%%
+  <meta http-equiv="refresh" content="0;url=%%=v(@writeURL)=%%"/>
+  %%[ ENDIF ]%%
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:Arial,sans-serif;background:#f5f5f5;color:#222;font-size:15px}
+    .header{background:%%=v(@brandColor)=%%;padding:20px 24px;text-align:center}
+    .header img{height:44px;display:block;margin:0 auto}
+    .header h1{color:#fff;font-size:18px;font-weight:700;margin-top:8px}
+    .card{max-width:620px;margin:32px auto;background:#fff;border-radius:6px;
+          box-shadow:0 2px 8px rgba(0,0,0,.10);padding:32px 36px}
+    h1{font-size:20px;font-weight:700;margin-bottom:6px;color:#111}
+    .subhead{font-size:13px;color:#666;margin-bottom:24px}
+    .section-label{font-size:11px;font-weight:700;letter-spacing:.08em;
+                   text-transform:uppercase;color:#888;margin-bottom:12px;
+                   padding-bottom:6px;border-bottom:1px solid #eee}
+    .org-badge{background:#e8f0fd;color:%%=v(@brandColor)=%%;font-size:10px;font-weight:700;
+               padding:3px 10px;border-radius:12px;border:1px solid #CCDDF5;
+               display:inline-block;margin-bottom:16px}
+    .pref-row{display:flex;align-items:flex-start;margin-bottom:16px;gap:12px}
+    .pref-row input[type=checkbox]{width:18px;height:18px;margin-top:2px;
+                                    flex-shrink:0;accent-color:%%=v(@brandColor)=%% }
+    .pref-row label .pref-name{font-weight:600;font-size:15px}
+    .pref-row label .pref-desc{font-size:12px;color:#666;margin-top:2px}
+    .divider{border:none;border-top:1px solid #eee;margin:24px 0}
+    .unsub-row{background:#fff5f5;border:1px solid #f5c0c0;border-radius:4px;
+               padding:14px 16px;display:flex;align-items:flex-start;gap:12px;margin-bottom:24px}
+    .unsub-row input[type=checkbox]{width:18px;height:18px;margin-top:2px;
+                                     flex-shrink:0;accent-color:#cc0000}
+    .unsub-row label .pref-name{font-weight:600;color:#cc0000;font-size:15px}
+    .unsub-row label .pref-desc{font-size:12px;color:#888;margin-top:2px}
+    .btn-save{display:block;width:100%;padding:13px;background:%%=v(@brandColor)=%%;
+              color:#fff;font-size:15px;font-weight:700;border:none;
+              border-radius:4px;cursor:pointer;margin-top:8px}
+    .btn-save:hover{opacity:.88}
+    .btn-red{background:#cc0000}
+    .btn-red:hover{background:#990000}
+    .confirm-icon{font-size:48px;text-align:center;margin-bottom:16px}
+    .confirm-msg{text-align:center}
+    .error-box{background:#fff5f5;border:1px solid #f5c0c0;border-radius:4px;
+               padding:16px;color:#cc0000;margin-bottom:24px}
+    .footer-note{text-align:center;font-size:11px;color:#aaa;margin-top:20px}
+  </style>
+</head>
+<body>
+
+<div class="header">
+  %%[ IF NOT Empty(@logoURL) THEN ]%%
+  <img src="%%=v(@logoURL)=%%" alt="%%=v(@logoAlt)=%%"/>
+  %%[ ELSE ]%%
+  <h1>%%=v(@buName)=%%</h1>
+  %%[ ENDIF ]%%
+</div>
+
+%%[ IF NOT Empty(@errorMsg) THEN ]%%
+
+<div class="card">
+  <div class="error-box">%%=v(@errorMsg)=%%</div>
+</div>
+
+%%[ ELSEIF @isPost == "true" THEN ]%%
+
+<div class="card"><p>Saving your preferences...</p></div>
+
+%%[ ELSEIF @action == "confirm" THEN ]%%
+
+%%[ VAR @wasUnsub SET @wasUnsub = QueryParameter("globalunsub") ]%%
+<div class="card">
+  <div class="confirm-icon">%%[ IF @wasUnsub == "true" THEN ]%%&#x1F6AB;%%[ ELSE ]%%&#x2705;%%[ ENDIF ]%%</div>
+  <div class="confirm-msg">
+    %%[ IF @wasUnsub == "true" THEN ]%%
+      <h1>You've been unsubscribed</h1>
+      <p style="color:#666;margin-top:12px;font-size:14px;">
+        You have been removed from all %%=v(@buName)=%% email communications.<br/>
+        Please allow up to one business day for changes to take effect.
+      </p>
+    %%[ ELSE ]%%
+      <h1>Preferences saved</h1>
+      <p style="color:#666;margin-top:12px;font-size:14px;">
+        Your communication preferences have been updated.<br/>
+        Please allow up to one business day for changes to take effect.
+      </p>
+    %%[ ENDIF ]%%
+  </div>
+  <p class="footer-note">%%=v(@buName)=%%</p>
+</div>
+
+%%[ ELSEIF @action == "unsub" THEN ]%%
+
+<div class="card">
+  %%[ IF NOT Empty(@orgname) THEN ]%%
+  <span class="org-badge">&#x21AA; %%=v(@orgname)=%%</span>
+  %%[ ENDIF ]%%
+  <h1>Unsubscribe from %%=v(@buName)=%%</h1>
+  <p class="subhead">You will be removed from all %%=v(@buName)=%% email communications.</p>
+
+  <form method="post">
+    <input type="hidden" name="formAction"    value="saveprefs"/>
+    <input type="hidden" name="globalunsub"   value="1"/>
+    <input type="hidden" name="p_newsletters" value="false"/>
+    <input type="hidden" name="p_events"      value="false"/>
+    <input type="hidden" name="p_alerts"      value="false"/>
+    <input type="hidden" name="p_academic"    value="false"/>
+    <input type="hidden" name="p_recruitment" value="false"/>
+    <input type="hidden" name="p_alumnidonor" value="false"/>
+    <input type="hidden" name="p_healthwellness" value="false"/>
+    <input type="hidden" name="sub"      value="%%=v(@subKey)=%%"/>
+    <input type="hidden" name="mid"      value="%%=v(@sendingMID)=%%"/>
+    <input type="hidden" name="jobid"    value="%%=v(@jobID)=%%"/>
+    <input type="hidden" name="listid"   value="%%=v(@listID)=%%"/>
+    <input type="hidden" name="batchid"  value="%%=v(@batchID)=%%"/>
+    <input type="hidden" name="orgname"  value="%%=v(@orgname)=%%"/>
+    <input type="hidden" name="writeback" value="%%=v(@writeBackURL)=%%"/>
+
+    <div class="unsub-row">
+      <input type="checkbox" id="confirm_unsub" name="confirm_unsub" value="1" required/>
+      <label for="confirm_unsub">
+        <div class="pref-name">Yes, unsubscribe me from all emails</div>
+        <div class="pref-desc">
+          I understand I will no longer receive email from %%=v(@buName)=%%.
+          Mandatory administrative communications may still be delivered as required.
+        </div>
+      </label>
+    </div>
+
+    <button type="submit" class="btn-save btn-red">Confirm Unsubscribe</button>
+  </form>
+
+  <p class="footer-note" style="margin-top:14px;">
+    Prefer to manage individual preferences?
+    <a href="%%=v(@writeBackURL)=%%?action=prefs&sub=%%=UrlEncode(@subKey)=%%&mid=%%=UrlEncode(@sendingMID)=%%"
+       style="color:%%=v(@brandColor)=%%;">Manage my preferences</a>
+  </p>
+</div>
+
+%%[ ELSEIF @action == "load" THEN ]%%
+
+<div class="card">
+  %%[ IF NOT Empty(@orgname) THEN ]%%
+  <span class="org-badge">&#x21AA; Reading from / Writing to: %%=v(@orgname)=%%</span>
+  %%[ ENDIF ]%%
+  <h1>Communication Preferences</h1>
+  <p class="subhead">
+    Choose which types of communications you'd like to receive from %%=v(@buName)=%%.
+    Changes take effect within one business day.
+  </p>
+
+  <form method="post">
+    <input type="hidden" name="formAction"  value="saveprefs"/>
+    <input type="hidden" name="sub"         value="%%=v(@subKey)=%%"/>
+    <input type="hidden" name="mid"         value="%%=v(@sendingMID)=%%"/>
+    <input type="hidden" name="orgname"     value="%%=v(@orgname)=%%"/>
+    <input type="hidden" name="writeback"   value="%%=v(@writeBackURL)=%%"/>
+
+    <p class="section-label">Email Subscriptions</p>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_nl" name="p_newsletters" value="1"
+        %%[ IF @p_newsletters == "True" OR @p_newsletters == "true" OR Empty(@p_newsletters) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_nl">
+        <div class="pref-name">Newsletters &amp; News</div>
+        <div class="pref-desc">University news digests, department newsletters, research publications, and announcements.</div>
+      </label>
+    </div>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_ev" name="p_events" value="1"
+        %%[ IF @p_events == "True" OR @p_events == "true" OR Empty(@p_events) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_ev">
+        <div class="pref-name">Events &amp; Programs</div>
+        <div class="pref-desc">Invitations to campus events, lectures, workshops, and program updates.</div>
+      </label>
+    </div>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_al" name="p_alerts" value="1"
+        %%[ IF @p_alerts == "True" OR @p_alerts == "true" OR Empty(@p_alerts) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_al">
+        <div class="pref-name">Alerts &amp; System Notices</div>
+        <div class="pref-desc">Technology alerts, system maintenance, security notices, and service updates.</div>
+      </label>
+    </div>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_ac" name="p_academic" value="1"
+        %%[ IF @p_academic == "True" OR @p_academic == "true" OR Empty(@p_academic) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_ac">
+        <div class="pref-name">Academic &amp; Departmental</div>
+        <div class="pref-desc">College and department-specific communications, faculty/staff updates, and compliance notices.</div>
+      </label>
+    </div>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_re" name="p_recruitment" value="1"
+        %%[ IF @p_recruitment == "True" OR @p_recruitment == "true" OR Empty(@p_recruitment) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_re">
+        <div class="pref-name">Recruitment &amp; Admissions</div>
+        <div class="pref-desc">Undergraduate, graduate, and professional program recruitment communications.</div>
+      </label>
+    </div>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_ad" name="p_alumnidonor" value="1"
+        %%[ IF @p_alumnidonor == "True" OR @p_alumnidonor == "true" OR Empty(@p_alumnidonor) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_ad">
+        <div class="pref-name">Alumni &amp; Donor Engagement</div>
+        <div class="pref-desc">Alumni association news, fundraising campaigns, and UK advancement updates.</div>
+      </label>
+    </div>
+
+    <div class="pref-row">
+      <input type="checkbox" id="p_hw" name="p_healthwellness" value="1"
+        %%[ IF @p_healthwellness == "True" OR @p_healthwellness == "true" OR Empty(@p_healthwellness) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="p_hw">
+        <div class="pref-name">Health &amp; Wellness</div>
+        <div class="pref-desc">Employee wellness programs, UK HealthCare patient communications, and campus health resources.</div>
+      </label>
+    </div>
+
+    <hr class="divider"/>
+    <p class="section-label">Global Unsubscribe</p>
+
+    <div class="unsub-row">
+      <input type="checkbox" id="globalunsub" name="globalunsub" value="1"
+        %%[ IF @globalUnsub == "True" OR @globalUnsub == "true" THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="globalunsub">
+        <div class="pref-name">Unsubscribe from all University of Kentucky emails</div>
+        <div class="pref-desc">
+          Remove me from all UK email communications.
+          Mandatory administrative communications may still be sent as required.
+        </div>
+      </label>
+    </div>
+
+    <button type="submit" class="btn-save">Save Preferences</button>
+  </form>
+</div>
+
+%%[ ELSE ]%%
+<div class="card">
+  <div class="error-box">
+    This page must be accessed through a link in a University of Kentucky email.
+  </div>
+</div>
+%%[ ENDIF ]%%
+
+<p class="footer-note">%%=v(@buName)=%% %%[ IF NOT Empty(@footerAddress) THEN ]%%&bull; %%=v(@footerAddress)=%%%%[ ENDIF ]%%</p>
+
+<script runat="server" language="javascript">
+  Platform.Load("core", "1.1.5");
+  var formAction  = Platform.Request.GetFormField("formAction");
+  var globalUnsub = Platform.Request.GetFormField("globalunsub");
+  var mid         = Platform.Request.GetFormField("mid");
+  var subKey      = Platform.Request.GetFormField("sub");
+
+  if (formAction === "saveprefs" && mid && subKey) {
+    var api       = new Script.Util.WSProxy();
+    var newStatus = (globalUnsub === "1") ? "Unsubscribed" : "Active";
+    api.setClientId({ ID: parseInt(mid, 10) });
+    api.updateItem("Subscriber", {
+      SubscriberKey: subKey,
+      Status:        newStatus
+    });
+  }
+</script>
+
+<script>
+  (function(){
+    var g = document.getElementById('globalunsub');
+    if (!g) return;
+    var cats = ['p_nl','p_ev','p_al','p_ac','p_re','p_ad','p_hw'];
+    function sync(){
+      cats.forEach(function(id){
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = g.checked;
+        el.closest('.pref-row').style.opacity = g.checked ? '0.4' : '1';
+        if (g.checked) el.checked = false;
+      });
+    }
+    g.addEventListener('change', sync);
+    sync();
+  })();
+</script>
+</body>
+</html>

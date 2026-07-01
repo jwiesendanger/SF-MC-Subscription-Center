@@ -1,0 +1,109 @@
+%%[
+/*
+  UK Dynamic Branded Footer — Content Block
+  Location: Parent BU > Content Builder > Content Blocks
+  Usage: Insert this content block into the footer region of every UK email template.
+
+  How it works:
+  - Reads %%memberid%% (the sending BU's MID, injected at send time by MCE)
+  - Looks up branding config from UK_PrefCenter_BrandConfig Shared DE
+  - Renders branded footer with correct logo, colors, address
+  - CloudPagesURL() encrypts subscriber key + send context into a tamper-proof token
+  - That token resolves the subscriber's identity on the child CloudPage without a login
+*/
+
+VAR @mid, @buName, @childPageID, @logoURL, @logoAlt, @brandColor
+VAR @footerAddress, @footerPhone, @prefURL, @unsubURL
+VAR @row, @rowCount
+
+/* memberid resolves to the SENDING business unit's MID at send time */
+SET @mid = AttributeValue("memberid")
+
+/* Look up brand config for this sending BU */
+SET @row = LookupRows("UK_PrefCenter_BrandConfig", "MID", @mid)
+SET @rowCount = RowCount(@row)
+
+IF @rowCount > 0 THEN
+  SET @buName       = Field(Row(@row, 1), "BUName")
+  SET @childPageID  = Field(Row(@row, 1), "ChildPageID")
+  SET @logoURL      = Field(Row(@row, 1), "LogoURL")
+  SET @logoAlt      = Field(Row(@row, 1), "LogoAlt")
+  SET @brandColor   = Field(Row(@row, 1), "BrandColor")
+  SET @footerAddress = Field(Row(@row, 1), "FooterAddress")
+  SET @footerPhone  = Field(Row(@row, 1), "FooterPhone")
+ELSE
+  /* Fallback defaults — should not happen in production if BrandConfig is populated */
+  SET @buName       = "University of Kentucky"
+  SET @childPageID  = REPLACE_WITH_FALLBACK_CHILD_PAGE_ID
+  SET @logoURL      = "https://uky.edu/brand/logo-white.png"
+  SET @logoAlt      = "University of Kentucky"
+  SET @brandColor   = "#003DAA"
+  SET @footerAddress = "410 Administration Dr, Lexington, KY 40506"
+  SET @footerPhone  = "(859) 257-9000"
+ENDIF
+
+/*
+  CloudPagesURL(pageID, param1, value1, param2, value2, ...)
+  All values are AES-256 encrypted — subscriber key is never exposed in the URL.
+  The child CloudPage uses AuthenticatedEmployeeID / QueryParameter to decrypt.
+*/
+SET @prefURL = CloudPagesURL(@childPageID, "action", "prefs")
+SET @unsubURL = CloudPagesURL(@childPageID, "action", "unsub")
+]%%
+
+<!-- =====================================================================
+     UK BRANDED FOOTER
+     Background color driven by BrandColor from BrandConfig DE
+     ===================================================================== -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background-color:%%=v(@brandColor)=%%;margin-top:20px;">
+  <tr>
+    <td align="center" style="padding:24px 20px 12px;">
+      <img src="%%=v(@logoURL)=%%" alt="%%=v(@logoAlt)=%%" height="40"
+           style="display:block;border:0;" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"
+        style="font-family:Arial,sans-serif;font-size:11px;color:#ffffff;
+               padding:0 20px 8px;line-height:1.6;">
+      %%=v(@buName)=%%<br />
+      %%=v(@footerAddress)=%%<br />
+      %%=v(@footerPhone)=%%
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="padding:8px 20px 4px;">
+      <table cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding:0 10px;">
+            <a href="%%=RedirectTo(@prefURL)=%%" alias="Manage Preferences"
+               style="font-family:Arial,sans-serif;font-size:11px;
+                      color:#ffffff;text-decoration:underline;">
+              Manage Communication Preferences
+            </a>
+          </td>
+          <td style="font-family:Arial,sans-serif;font-size:11px;
+                     color:#ffffff;padding:0 4px;">|</td>
+          <td style="padding:0 10px;">
+            <a href="%%=RedirectTo(@unsubURL)=%%" alias="Unsubscribe"
+               style="font-family:Arial,sans-serif;font-size:11px;
+                      color:#ffffff;text-decoration:underline;">
+              Unsubscribe
+            </a>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td align="center"
+        style="font-family:Arial,sans-serif;font-size:10px;color:#cccccc;
+               padding:8px 20px 20px;line-height:1.5;">
+      &copy; %%system_date_year%% University of Kentucky. All rights reserved.<br />
+      This email was sent to <a href="mailto:%%emailaddr%%"
+        style="color:#cccccc;">%%emailaddr%%</a> because you are affiliated
+      with the University of Kentucky.
+    </td>
+  </tr>
+</table>

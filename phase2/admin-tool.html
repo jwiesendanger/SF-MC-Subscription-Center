@@ -270,17 +270,10 @@ if (action == "updateField") {
 
 if (action == "removeField") {
   try {
-    var rfId   = Platform.Request.GetFormField("fieldId");
-    var rfProx = new Script.Util.WSProxy();
-    var rfRes  = rfProx.updateItem("DataExtensionObject",
-      {CustomerKey: DE_FIELDS, Properties: [
-        {Name: "FieldID",      Value: rfId},
-        {Name: "IsActive",     Value: "false"},
-        {Name: "ModifiedDate", Value: Format(Now(), "M/d/yyyy")}
-      ]},
-      {SaveOptions: [{PropertyName: "*", SaveAction: "Update"}]});
-    statusMsg = (rfRes && rfRes.Status == "OK") ? "Field deactivated." : "Deactivate failed: " + (rfRes ? rfRes.StatusMessage : "no response");
-    if (!rfRes || rfRes.Status != "OK") statusType = "error";
+    var rfId  = Platform.Request.GetFormField("fieldId");
+    var rfUpd = Platform.Function.UpdateData(DE_FIELDS, ["FieldID"], [rfId], ["IsActive","ModifiedDate"], [0, Format(Now(), "M/d/yyyy")]);
+    statusMsg  = (rfUpd > 0) ? "Field deactivated." : "Deactivate failed: no matching record found.";
+    if (rfUpd < 1) statusType = "error";
   } catch(e) { statusMsg = "removeField error: " + e.message; statusType = "error"; }
 }
 
@@ -1256,7 +1249,7 @@ function renderFieldsTable() {
       '<td><span class="badge badge-green">Active</span></td>' +
       '<td>' +
         '<button class="btn btn-ghost btn-sm" style="margin-right:6px" onclick="openEditField(\'' + esc(f.FieldID) + '\',\'' + esc(f.DisplayLabel) + '\',' + parseInt(f.SortOrder||99) + ')">Edit</button>' +
-        '<button class="btn btn-danger btn-sm" onclick="confirmRemoveField(\'' + esc(f.FieldID) + '\',\'' + esc(f.DisplayLabel) + '\')">Remove</button>' +
+        '<button class="btn btn-danger btn-sm" onclick="confirmRemoveField(\'' + jsEsc(f.FieldID) + '\',\'' + jsEsc(f.DisplayLabel) + '\')">Remove</button>' +
       '</td>' +
     '</tr>';
   }).join('');
@@ -1302,6 +1295,14 @@ function esc(s) {
     .replace(/>/g,  '&gt;')
     .replace(/"/g,  '&quot;')
     .replace(/'/g,  '&#39;');
+}
+
+/* jsEsc: escape for JS string literals inside onclick attributes.
+   esc() uses &#39; which the HTML parser decodes back to ' before JS runs —
+   breaking single-quoted argument strings. jsEsc uses \' which JS handles correctly. */
+function jsEsc(s) {
+  if (s == null) return '';
+  return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

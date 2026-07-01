@@ -1,0 +1,333 @@
+%%[
+/*
+  UK Parent BU — Subscription Preference Center
+  Phase 4 | SF-MC Subscription Center POC
+
+  Flow:
+    Email footer → Child Relay (action=prefs / action=unsub)
+    → Relay reads CRM, builds URL → Parent (action=load / action=unsub)
+    → Subscriber submits form → POST → meta refresh to Relay (action=write)
+    → Relay writes CRM → Relay redirects to Parent (action=confirm)
+
+  Parameters received from relay page:
+    action    "load" | "unsub" | "confirm"
+    sub       MC Subscriber Key
+    mid       Child BU MID
+    oid       Salesforce Org ID (18-char) — used to look up config DE
+    writeback Child relay page URL (relay's own URL, for write-back redirect)
+    globalunsub  "true" if subscriber is already globally unsubscribed
+    [FieldAPIName]  One param per active field, value "true" or "false"
+                    e.g. Email_Opt_In_Benefits__c=true
+
+  IMPORTANT PATTERNS:
+    - meta http-equiv="refresh" for ALL post-submit redirects
+      (Redirect() and HTTPRedirect() cause "page content contains errors")
+    - Relay page passes current CRM field values as query params
+      (parent does NOT query the synced DE directly)
+    - Field list is driven by SubscriptionConfig_Fields DE (admin tool)
+      No field names are hardcoded here
+*/
+
+VAR @action, @sub, @mid, @oid, @writeback, @orgname
+VAR @globalunsub, @isPost, @formGlobal, @writeURL, @errorMsg
+VAR @configFields, @row, @i, @apiName, @label, @isActive, @fieldVal, @currentVal, @fieldCount
+
+/* ── Read GET parameters ──────────────────────────────────────────── */
+SET @action      = QueryParameter("action")
+SET @sub         = QueryParameter("sub")
+SET @mid         = QueryParameter("mid")
+SET @oid         = QueryParameter("oid")
+SET @writeback   = QueryParameter("writeback")
+SET @globalunsub = QueryParameter("globalunsub")
+SET @isPost      = "false"
+
+/* ── POST: subscriber submitted the preference form ──────────────── */
+IF RequestParameter("formAction") == "saveprefs" THEN
+  SET @isPost     = "true"
+  SET @sub        = RequestParameter("sub")
+  SET @mid        = RequestParameter("mid")
+  SET @oid        = RequestParameter("oid")
+  SET @writeback  = RequestParameter("writeback")
+  SET @formGlobal = RequestParameter("globalunsub")
+ENDIF
+
+/* ── Load org display name from SubscriptionConfig_Orgs ─────────── */
+IF NOT Empty(@oid) THEN
+  SET @orgname = Lookup("SubscriptionConfig_Orgs", "DisplayName", "OrgID", @oid)
+ENDIF
+IF Empty(@orgname) THEN
+  SET @orgname = "University of Kentucky"
+ENDIF
+
+/* ── Load active field config for this org ───────────────────────── */
+/*
+   Retrieves all fields registered for this org via the Phase 2 admin tool.
+   IsActive filter applied per-row below to avoid Boolean comparison issues.
+   Field order follows DE insertion order (admin tool entry order).
+*/
+IF NOT Empty(@oid) THEN
+  SET @configFields = LookupRows("SubscriptionConfig_Fields", "OrgID", @oid)
+  SET @fieldCount   = RowCount(@configFields)
+ELSE
+  SET @fieldCount = 0
+ENDIF
+
+/* ── Build relay write-back URL on POST ──────────────────────────── */
+IF @isPost == "true" THEN
+  SET @writeURL = Concat(@writeback,
+    "?action=write",
+    "&sub=",        UrlEncode(@sub),
+    "&mid=",        UrlEncode(@mid),
+    "&oid=",        UrlEncode(@oid),
+    "&globalunsub=", IIF(@formGlobal == "1", "true", "false")
+  )
+  FOR @i = 1 TO @fieldCount DO
+    SET @row      = Row(@configFields, @i)
+    SET @isActive = Field(@row, "IsActive")
+    IF @isActive != "false" AND @isActive != "False" THEN
+      SET @apiName  = Field(@row, "FieldAPIName")
+      SET @fieldVal = IIF(@formGlobal == "1", "false",
+                       IIF(RequestParameter(@apiName) == "1", "true", "false"))
+      SET @writeURL = Concat(@writeURL, "&", UrlEncode(@apiName), "=", @fieldVal)
+    ENDIF
+  NEXT @i
+ENDIF
+
+/* ── Validate ─────────────────────────────────────────────────────── */
+IF Empty(@sub) AND @action != "confirm" THEN
+  SET @errorMsg = "This link is not valid. Please use the link in your most recent University of Kentucky email."
+ENDIF
+
+]%%
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Communication Preferences — %%=v(@orgname)=%%</title>
+  %%[ IF @isPost == "true" THEN ]%%
+  <meta http-equiv="refresh" content="0;url=%%=v(@writeURL)=%%"/>
+  %%[ ENDIF ]%%
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:Arial,sans-serif;background:#f5f5f5;color:#222;font-size:15px}
+    .card{max-width:620px;margin:32px auto;background:#fff;border-radius:6px;
+          box-shadow:0 2px 8px rgba(0,0,0,.10);padding:32px 36px}
+    h1{font-size:20px;font-weight:700;margin-bottom:6px;color:#111}
+    .subhead{font-size:13px;color:#666;margin-bottom:24px}
+    .org-badge{background:#e8f0fd;color:#005DAA;font-size:10px;font-weight:700;
+               padding:3px 10px;border-radius:12px;border:1px solid #CCDDF5;
+               display:inline-block;margin-bottom:16px}
+    .pref-row{display:flex;align-items:flex-start;margin-bottom:16px;gap:12px}
+    .pref-row input[type=checkbox]{width:18px;height:18px;margin-top:2px;flex-shrink:0;accent-color:#005DAA}
+    .pref-row label .pref-name{font-weight:600;font-size:15px}
+    .divider{border:none;border-top:1px solid #eee;margin:24px 0}
+    .unsub-row{background:#fff5f5;border:1px solid #f5c0c0;border-radius:4px;
+               padding:14px 16px;display:flex;align-items:flex-start;gap:12px;margin-bottom:24px}
+    .unsub-row input[type=checkbox]{width:18px;height:18px;margin-top:2px;flex-shrink:0;accent-color:#cc0000}
+    .unsub-row label .pref-name{font-weight:600;color:#cc0000;font-size:15px}
+    .unsub-row label .pref-desc{font-size:12px;color:#888;margin-top:2px}
+    .btn-save{display:block;width:100%;padding:13px;background:#005DAA;color:#fff;
+              font-size:15px;font-weight:700;border:none;border-radius:4px;cursor:pointer;margin-top:8px}
+    .btn-save:hover{opacity:.88}
+    .btn-red{background:#cc0000}
+    .btn-red:hover{background:#990000}
+    .confirm-icon{font-size:48px;text-align:center;margin-bottom:16px}
+    .confirm-msg{text-align:center}
+    .error-box{background:#fff5f5;border:1px solid #f5c0c0;border-radius:4px;
+               padding:16px;color:#cc0000;margin-bottom:24px}
+    .footer-note{text-align:center;font-size:11px;color:#aaa;margin-top:20px}
+  </style>
+</head>
+<body>
+
+%%[ IF NOT Empty(@errorMsg) THEN ]%%
+
+<div class="card">
+  <div class="error-box">%%=v(@errorMsg)=%%</div>
+</div>
+
+%%[ ELSEIF @isPost == "true" THEN ]%%
+
+<div class="card"><p>Saving your preferences&hellip;</p></div>
+
+%%[ ELSEIF @action == "confirm" THEN ]%%
+
+%%[ VAR @wasUnsub SET @wasUnsub = QueryParameter("globalunsub") ]%%
+<div class="card">
+  <div class="confirm-icon">%%[ IF @wasUnsub == "true" THEN ]%%&#x1F6AB;%%[ ELSE ]%%&#x2705;%%[ ENDIF ]%%</div>
+  <div class="confirm-msg">
+    %%[ IF @wasUnsub == "true" THEN ]%%
+      <h1>You've been unsubscribed</h1>
+      <p style="color:#666;margin-top:12px;font-size:14px;">
+        You have been removed from all %%=v(@orgname)=%% email communications.<br/>
+        Please allow up to one business day for changes to take effect.
+      </p>
+    %%[ ELSE ]%%
+      <h1>Preferences saved</h1>
+      <p style="color:#666;margin-top:12px;font-size:14px;">
+        Your communication preferences have been updated.<br/>
+        Please allow up to one business day for changes to take effect.
+      </p>
+    %%[ ENDIF ]%%
+  </div>
+  <p class="footer-note">%%=v(@orgname)=%%</p>
+</div>
+
+%%[ ELSEIF @action == "unsub" THEN ]%%
+
+<div class="card">
+  <span class="org-badge">&#x21AA; %%=v(@orgname)=%%</span>
+  <h1>Unsubscribe from %%=v(@orgname)=%%</h1>
+  <p class="subhead">
+    You will be removed from all %%=v(@orgname)=%% email communications.<br/>
+    This does not affect emails from other University of Kentucky departments.
+  </p>
+
+  <form method="post">
+    <input type="hidden" name="formAction"   value="saveprefs"/>
+    <input type="hidden" name="globalunsub"  value="1"/>
+    <input type="hidden" name="sub"          value="%%=v(@sub)=%%"/>
+    <input type="hidden" name="mid"          value="%%=v(@mid)=%%"/>
+    <input type="hidden" name="oid"          value="%%=v(@oid)=%%"/>
+    <input type="hidden" name="writeback"    value="%%=v(@writeback)=%%"/>
+    <!-- All fields set to false — relay will clear them in CRM -->
+    %%[ FOR @i = 1 TO @fieldCount DO
+        SET @row      = Row(@configFields, @i)
+        SET @isActive = Field(@row, "IsActive")
+        IF @isActive != "false" AND @isActive != "False" THEN
+          SET @apiName = Field(@row, "FieldAPIName")
+    ]%%
+    <input type="hidden" name="%%=v(@apiName)=%%" value="false"/>
+    %%[   ENDIF
+        NEXT @i ]%%
+
+    <div class="unsub-row">
+      <input type="checkbox" id="confirm_unsub" name="confirm_unsub" value="1" required/>
+      <label for="confirm_unsub">
+        <div class="pref-name">Yes, unsubscribe me from all %%=v(@orgname)=%% emails</div>
+        <div class="pref-desc">
+          I understand I will no longer receive email from %%=v(@orgname)=%%.
+          Mandatory administrative communications may still be delivered as required.
+        </div>
+      </label>
+    </div>
+
+    <button type="submit" class="btn-save btn-red">Confirm Unsubscribe</button>
+  </form>
+
+  <p class="footer-note" style="margin-top:14px;">
+    Prefer to manage individual preferences?
+    <a href="%%=v(@writeback)=%%?action=prefs&sub=%%=UrlEncode(@sub)=%%&mid=%%=UrlEncode(@mid)=%%&oid=%%=UrlEncode(@oid)=%%"
+       style="color:#005DAA;">Manage my preferences</a>
+  </p>
+</div>
+
+%%[ ELSEIF @action == "load" THEN ]%%
+
+<div class="card">
+  <span class="org-badge">&#x21AA; %%=v(@orgname)=%%</span>
+  <h1>Communication Preferences</h1>
+  <p class="subhead">
+    Choose which types of communications you'd like to receive from %%=v(@orgname)=%%.
+  </p>
+
+  <form method="post">
+    <input type="hidden" name="formAction" value="saveprefs"/>
+    <input type="hidden" name="sub"        value="%%=v(@sub)=%%"/>
+    <input type="hidden" name="mid"        value="%%=v(@mid)=%%"/>
+    <input type="hidden" name="oid"        value="%%=v(@oid)=%%"/>
+    <input type="hidden" name="writeback"  value="%%=v(@writeback)=%%"/>
+
+    <!-- Render one checkbox per active field from SubscriptionConfig_Fields -->
+    %%[ FOR @i = 1 TO @fieldCount DO
+        SET @row        = Row(@configFields, @i)
+        SET @isActive   = Field(@row, "IsActive")
+        IF @isActive != "false" AND @isActive != "False" THEN
+          SET @apiName    = Field(@row, "FieldAPIName")
+          SET @label      = Field(@row, "DisplayLabel")
+          SET @currentVal = QueryParameter(@apiName)
+    ]%%
+    <div class="pref-row">
+      <input type="checkbox" id="f%%=v(@i)=%%" name="%%=v(@apiName)=%%" value="1"
+        %%[ IF @currentVal == "true" OR @currentVal == "True" OR Empty(@currentVal) THEN ]%% checked %%[ ENDIF ]%%/>
+      <label for="f%%=v(@i)=%%">
+        <div class="pref-name">%%=v(@label)=%%</div>
+      </label>
+    </div>
+    %%[   ENDIF
+        NEXT @i ]%%
+
+    <hr class="divider"/>
+
+    <div class="unsub-row">
+      <input type="checkbox" id="globalunsub" name="globalunsub" value="1"/>
+      <label for="globalunsub">
+        <div class="pref-name">Unsubscribe from all %%=v(@orgname)=%% emails</div>
+        <div class="pref-desc">
+          Remove me from all %%=v(@orgname)=%% communications.
+          This does not affect emails from other University of Kentucky departments.
+        </div>
+      </label>
+    </div>
+
+    <button type="submit" class="btn-save">Save Preferences</button>
+  </form>
+</div>
+
+%%[ ELSE ]%%
+
+<div class="card">
+  <div class="error-box">
+    This page must be accessed through a link in a University of Kentucky email.
+  </div>
+</div>
+
+%%[ ENDIF ]%%
+
+<p class="footer-note">%%=v(@orgname)=%%</p>
+
+<!--
+  SSJS block below: Updates MC subscriber status on form submission.
+  Executes server-side (block will not appear in rendered HTML output).
+  Sets Unsubscribed when globalunsub=1; Active otherwise.
+-->
+<script runat="server" language="javascript">
+  Platform.Load("core", "1.1.5");
+  var formAction  = Platform.Request.GetFormField("formAction");
+  var globalUnsub = Platform.Request.GetFormField("globalunsub");
+  var mid         = Platform.Request.GetFormField("mid");
+  var subKey      = Platform.Request.GetFormField("sub");
+
+  if (formAction === "saveprefs" && mid && subKey) {
+    var api       = new Script.Util.WSProxy();
+    var newStatus = (globalUnsub === "1") ? "Unsubscribed" : "Active";
+    api.setClientId({ ID: parseInt(mid, 10) });
+    api.updateItem("Subscriber", {
+      SubscriberKey: subKey,
+      Status:        newStatus
+    });
+  }
+</script>
+
+<script>
+  /* Disable individual category checkboxes when global unsub is checked */
+  (function(){
+    var g = document.getElementById('globalunsub');
+    if (!g) return;
+    var cats = document.querySelectorAll('.pref-row input[type=checkbox]');
+    function sync(){
+      cats.forEach(function(el){
+        el.disabled = g.checked;
+        el.closest('.pref-row').style.opacity = g.checked ? '0.4' : '1';
+        if (g.checked) el.checked = false;
+      });
+    }
+    g.addEventListener('change', sync);
+    sync();
+  })();
+</script>
+
+</body>
+</html>
